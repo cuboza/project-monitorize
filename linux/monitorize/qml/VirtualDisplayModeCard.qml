@@ -10,8 +10,10 @@ Rectangle {
     required property var displayConfig
     property bool canRemove: false
     property bool vkmsSelected: false
+    property bool vkmsConnectorSelected: false
     property var nativeResolutionOptions: []
     property var vkmsResolutionOptions: []
+    property var vkmsRefreshRates: ({})
     property bool vkmsCustomCapabilityChecking: false
     property string vkmsCustomEdidCapability: "unknown"
     property bool customModeActive: false
@@ -55,17 +57,22 @@ Rectangle {
     function applyConfiguration() {
         if (!displayConfig) return
         syncing = true
-        let requestedResolution = displayConfig.resolution || "1920x1080"
-        if (!resolution.selectValue(requestedResolution, true))
-            resolution.selectValue(requestedResolution)
+        let requestedResolution = displayConfig.resolution || (vkmsSelected ? "" : "1920x1080")
+        if (!resolution.selectValue(requestedResolution, true)) {
+            if (vkmsSelected) resolution.currentIndex = -1
+            else resolution.selectValue(requestedResolution)
+        }
         if (!customWidth.activeFocus)
             customWidth.text = displayConfig.custom_w || "1920"
         if (!customHeight.activeFocus)
             customHeight.text = displayConfig.custom_h || "1080"
         let requestedRefresh = displayConfig.custom_fps
-            ? "Custom..." : refreshLabel(displayConfig.fps || "60")
-        refresh.selectValue(requestedRefresh, true)
-        if (refresh.currentIndex < 0) refresh.selectValue("60 Hz")
+            ? "Custom..." : (vkmsSelected && !displayConfig.fps
+                ? "" : refreshLabel(displayConfig.fps || "60"))
+        if (!refresh.selectValue(requestedRefresh, true)) {
+            if (vkmsSelected && requestedResolution !== "Custom...") refresh.currentIndex = -1
+            else refresh.selectValue("60 Hz")
+        }
         if (!customRefresh.activeFocus)
             customRefresh.text = displayConfig.custom_fps || "60"
         customModeActive = !vkmsSelected || (customSelected && vkmsCustomEdidCapability !== "unsupported")
@@ -90,6 +97,7 @@ Rectangle {
     }
 
     function commitCurrentMode() {
+        if (vkmsSelected && (resolution.currentIndex < 0 || refresh.currentIndex < 0)) return
         commit(getCurrentMode())
     }
 
@@ -107,16 +115,21 @@ Rectangle {
 
     function restoreNormalMode() {
         let fallback = firstNormalResolution()
-        if (!fallback) return
+        if (!fallback) {
+            resolution.currentIndex = -1
+            return
+        }
         syncing = true
         resolution.selectValue(fallback, true)
-        refresh.selectValue("60 Hz", true)
+        refresh.currentIndex = card.vkmsRefreshRates[fallback]
+            && card.vkmsRefreshRates[fallback].length > 0 ? 0 : -1
         syncing = false
         commitCurrentMode()
     }
 
     onDisplayConfigChanged: applyConfiguration()
     onResolutionOptionsChanged: applyConfiguration()
+    onVkmsRefreshRatesChanged: applyConfiguration()
     onVkmsSelectedChanged: applyConfiguration()
     onVkmsCustomEdidCapabilityChanged: {
         if (!vkmsSelected || !customSelected) return
@@ -163,7 +176,8 @@ Rectangle {
             Text { text: "Resolution"; color: theme.textSecondary; Layout.fillWidth: true }
             Text {
                 text: "Refresh Rate"
-                color: card.vkmsSelected && !card.customModeActive ? theme.textMuted : theme.textSecondary
+                color: card.vkmsSelected && card.customSelected && !card.customModeActive
+                    ? theme.textMuted : theme.textSecondary
                 Layout.fillWidth: true
             }
             CustomComboBox {
@@ -172,12 +186,15 @@ Rectangle {
                 enabled: !card.vkmsCustomCapabilityChecking
                 opacity: enabled ? 1 : 0.45
                 model: card.resolutionOptions
+                displayText: currentIndex < 0 ? "Select an available mode" : currentText
                 onActivated: {
                     if (card.syncing) return
                     if (card.vkmsSelected && currentText === "Custom...") {
+                        refresh.selectValue("60 Hz", true)
                         card.checkCustomMode()
                     } else {
                         card.customModeActive = !card.vkmsSelected
+                        if (card.vkmsSelected) refresh.currentIndex = -1
                     }
                     card.commitCurrentMode()
                 }
@@ -185,11 +202,13 @@ Rectangle {
             CustomComboBox {
                 id: refresh
                 Layout.fillWidth: true
-                model: ["30 Hz", "60 Hz", "75 Hz", "90 Hz", "120 Hz", "144 Hz", "Custom..."]
-                enabled: !card.vkmsSelected || card.customModeActive
+                model: card.vkmsSelected && !card.customSelected
+                    ? (card.vkmsRefreshRates[resolution.currentText] || [])
+                    : ["30 Hz", "60 Hz", "75 Hz", "90 Hz", "120 Hz", "144 Hz", "Custom..."]
+                enabled: (!card.vkmsSelected || card.customModeActive || !card.customSelected)
+                    && count > 0
                 opacity: enabled ? 1 : 0.45
-                displayText: card.vkmsSelected && !card.customModeActive
-                    ? "~60 Hz — Managed by VKMS" : currentText
+                displayText: currentIndex < 0 ? "Select an available rate" : currentText
                 onActivated: card.commitCurrentMode()
             }
             RowLayout {
@@ -216,6 +235,31 @@ Rectangle {
                 placeholderText: "24–240"; maximumLength: 3
                 onEditingFinished: card.commitCurrentMode()
             }
+        }
+        Text {
+            visible: card.vkmsSelected && card.vkmsResolutionOptions.length === 1
+            text: card.vkmsConnectorSelected
+                ? "The selected stock VKMS connector has no DRM modes. Custom resolution requires monitorize-vkms."
+                : "Select a stock VKMS connector to see its DRM modes. Custom resolution requires monitorize-vkms."
+            color: theme.textMuted; font.pixelSize: 12
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        Text {
+            visible: card.vkmsSelected && !card.customSelected
+                && resolution.currentIndex >= 0 && refresh.count === 0
+            text: "The desktop did not expose a refresh rate for this DRM resolution."
+            color: theme.textMuted; font.pixelSize: 12
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        Text {
+            visible: card.vkmsSelected && resolution.currentIndex < 0
+                && card.vkmsResolutionOptions.length > 1
+            text: "The saved resolution is no longer advertised by VKMS. Select an available mode."
+            color: theme.textMuted; font.pixelSize: 12
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
         Text {
             visible: card.vkmsSelected && card.vkmsCustomCapabilityChecking

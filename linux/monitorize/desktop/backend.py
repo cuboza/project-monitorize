@@ -53,6 +53,7 @@ from monitorize.platform.vkms_backend import (
     custom_edid_capability_from_response,
     open_monitorize_vkms_install_page,
     resolution_options as vkms_resolution_options,
+    stock_vkms_connectors,
 )
 
 
@@ -74,6 +75,7 @@ class MonitorizeBackend(QObject):
     systemSetupPendingChanged = pyqtSignal(bool)
     streamingBackendChanged = pyqtSignal(str)
     vkmsResolutionOptionsChanged = pyqtSignal()
+    vkmsConnectorsChanged = pyqtSignal()
     vkmsCustomCapabilityCheckingChanged = pyqtSignal()
     vkmsCustomEdidCapabilityChanged = pyqtSignal()
     vkmsCustomCapabilityChecked = pyqtSignal(str)
@@ -107,7 +109,10 @@ class MonitorizeBackend(QObject):
         self.logAppended.connect(self._remember_session_log)
         self._presets = load_presets()
         self._preset_launch_status = ""
-        self._vkms_resolution_options = vkms_resolution_options()
+        self._vkms_connectors = stock_vkms_connectors()
+        self._vkms_resolution_options = ["Custom..."]
+        self._vkms_refresh_rates = {}
+        self.refreshVkmsResolutionOptions()
         self._vkms_custom_capability = None
         self._vkms_custom_capability_process = None
         self._system_setup_available = bool(get_system_setup_status()["available"])
@@ -274,6 +279,14 @@ class MonitorizeBackend(QObject):
     def vkmsResolutionOptions(self):
         return list(self._vkms_resolution_options)
 
+    @pyqtProperty("QVariant", notify=vkmsConnectorsChanged)
+    def vkmsConnectors(self):
+        return [dict(entry) for entry in self._vkms_connectors]
+
+    @pyqtProperty("QVariant", notify=vkmsResolutionOptionsChanged)
+    def vkmsRefreshRates(self):
+        return {size: list(rates) for size, rates in self._vkms_refresh_rates.items()}
+
     @pyqtProperty(bool, notify=vkmsCustomCapabilityCheckingChanged)
     def vkmsCustomCapabilityChecking(self):
         return self._vkms_custom_capability_process is not None
@@ -286,9 +299,35 @@ class MonitorizeBackend(QObject):
 
     @pyqtSlot()
     def refreshVkmsResolutionOptions(self):
-        options = vkms_resolution_options()
-        if options != self._vkms_resolution_options:
+        connectors = stock_vkms_connectors()
+        if connectors != self._vkms_connectors:
+            self._vkms_connectors = connectors
+            self.vkmsConnectorsChanged.emit()
+        options = vkms_resolution_options(
+            connector_id=load_display_settings().get("vkms_connector", "")
+        )
+        rates = {}
+        selected = load_display_settings().get("vkms_connector", "")
+        if selected and any(entry["id"] == selected for entry in connectors):
+            from monitorize.platform.stock_vkms_output import StockVkmsOutput
+            try:
+                connector_number = next(
+                    entry["connector_id"] for entry in connectors if entry["id"] == selected
+                )
+                output = StockVkmsOutput(selected, self._detected_de, connector_number)
+                drm_sizes = set(options[:-1])
+                for mode in output.modes():
+                    size = f"{mode['width']}x{mode['height']}"
+                    if size in drm_sizes:
+                        label = f"{mode['refresh_rate']:g} Hz"
+                        rates.setdefault(size, set()).add(label)
+            except Exception as exc:
+                app_log.write("DISPLAY", f"Could not read stock VKMS desktop modes: {exc}", level=logging.WARNING)
+        rates = {size: sorted(values, key=lambda label: float(label.split()[0]))
+                 for size, values in rates.items()}
+        if options != self._vkms_resolution_options or rates != self._vkms_refresh_rates:
             self._vkms_resolution_options = options
+            self._vkms_refresh_rates = rates
             self.vkmsResolutionOptionsChanged.emit()
 
     def _finish_vkms_custom_capability(self, capability, detail=""):
@@ -588,7 +627,7 @@ class MonitorizeBackend(QObject):
 
         return active_outputs(self._detected_de)
 
-    @pyqtSlot(str, str, str, str, str, str, str, str, str, bool, bool, bool, str, str)
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, bool, bool, bool, str, str, str)
     def saveDisplaySettings(
         self,
         resolution,
@@ -605,6 +644,7 @@ class MonitorizeBackend(QObject):
         enable_audio,
         mirror_output="",
         virtual_display_creator="native",
+        vkms_connector="",
     ):
         previous_gpu = load_display_settings().get("sunshine_gpu", "")
         save_display_settings(
@@ -625,6 +665,7 @@ class MonitorizeBackend(QObject):
                 virtual_display_creator
                 if self.vkmsCreatorAvailable else "native"
             ),
+            vkms_connector=vkms_connector,
         )
         if self._web_settings_enabled and sunshine_gpu != previous_gpu:
             selected = resolve_encoding_gpu(sunshine_encoder, sunshine_gpu)
@@ -960,6 +1001,7 @@ class MonitorizeBackend(QObject):
                 if self.vkmsCreatorAvailable else "native"
             ),
             vkms_custom_mode=bool(primary.get("vkms_custom_mode", False)),
+            vkms_connector=primary.get("vkms_connector", ""),
         )
 
     @pyqtSlot(int, str, result=str)

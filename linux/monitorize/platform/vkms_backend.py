@@ -1,4 +1,4 @@
-"""VKMS virtual display lifecycle provider using the standalone monitorize-vkms CLI."""
+"""VKMS lifecycle: existing stock DRM outputs or standalone custom EDID CLI."""
 
 from __future__ import annotations
 
@@ -21,32 +21,6 @@ from monitorize.platform.monitorize_vkms_cli import (
 
 log = logging.getLogger(__name__)
 
-VKMS_RESOLUTIONS = (
-    (4096, 2160),
-    (2560, 1600),
-    (2048, 1152),
-    (1920, 1440),
-    (1920, 1200),
-    (1920, 1080),
-    (1856, 1392),
-    (1792, 1344),
-    (1680, 1050),
-    (1600, 1200),
-    (1600, 900),
-    (1440, 900),
-    (1400, 1050),
-    (1366, 768),
-    (1360, 768),
-    (1280, 1024),
-    (1280, 960),
-    (1280, 800),
-    (1280, 768),
-    (1280, 720),
-    (1024, 768),
-    (848, 480),
-    (800, 600),
-    (640, 480),
-)
 VKMS_SLOTS = ("primary",)
 MONITORIZE_VKMS_INSTALL_URL = "https://github.com/vinnavannewton/monitorize-vkms"
 
@@ -97,39 +71,146 @@ def open_monitorize_vkms_install_page() -> bool:
         return False
 
 
-def sanitize_vkms_resolution(width: int, height: int) -> tuple[int, int]:
-    """Sanitize preset sizes if requested."""
-    requested = (int(width), int(height))
-    return requested if requested in VKMS_RESOLUTIONS else (1920, 1080)
-
-
-def resolution_options(drm_root: Path | None = None) -> list[str]:
-    """Return live normal modes, or common preset modes before a device exists."""
-    modes: set[tuple[int, int]] = set()
+def stock_vkms_connectors(drm_root: Path | None = None) -> list[dict]:
+    """Find DRM connectors belonging to the in-tree VKMS driver."""
+    found = []
+    root = drm_root or Path("/sys/class/drm")
     try:
-        connectors = sorted((drm_root or Path("/sys/class/drm")).iterdir())
+        connectors = sorted(root.iterdir())
     except OSError:
-        connectors = []
+        return found
 
     for connector in connectors:
         if not _DRM_CONNECTOR_NAME.fullmatch(connector.name):
             continue
+        card_name = connector.name.split("-", 1)[0]
         try:
-            device = (connector / "device").resolve()
-            if "/faux/monitorize" not in str(device):
+            driver = (root / card_name / "device" / "driver").resolve(strict=True)
+            if driver.name != "vkms":
+                continue
+            if (connector / "status").read_text(encoding="utf-8").strip() != "connected":
                 continue
             raw_modes = (connector / "modes").read_text(encoding="utf-8").splitlines()
-        except OSError:
+            connector_number = int((connector / "connector_id").read_text().strip())
+        except (OSError, ValueError):
             continue
+        modes = set()
         for raw_mode in raw_modes:
             match = _DRM_MODE_NAME.fullmatch(raw_mode.strip())
             if match:
                 modes.add((int(match.group(1)), int(match.group(2))))
+        found.append({
+            "id": connector.name,
+            "name": connector.name.split("-", 1)[1],
+            "connector_id": connector_number,
+            "modes": [f"{width}x{height}" for width, height in sorted(
+                modes, key=lambda mode: (mode[0] * mode[1], mode), reverse=True
+            )],
+        })
+    return found
 
-    if not modes:
-        modes.update(VKMS_RESOLUTIONS)
+
+def resolution_options(drm_root: Path | None = None, connector_id: str = "") -> list[str]:
+    """Return only modes advertised by the selected stock VKMS connector."""
+    connectors = stock_vkms_connectors(drm_root)
+    if connector_id:
+        connectors = [entry for entry in connectors if entry["id"] == connector_id]
+    else:
+        connectors = []
+    modes: set[tuple[int, int]] = set()
+    for connector in connectors:
+        for raw_mode in connector["modes"]:
+            match = _DRM_MODE_NAME.fullmatch(raw_mode)
+            if match:
+                modes.add((int(match.group(1)), int(match.group(2))))
+
     ordered = sorted(modes, key=lambda mode: (mode[0] * mode[1], mode), reverse=True)
     return [*(f"{width}x{height}" for width, height in ordered), "Custom..."]
+
+
+def run_stock_vkms_headless(
+    connector_id: str, width: int, height: int, fps: int | float, desktop: str
+) -> int:
+    """Temporarily configure one existing stock VKMS output for a session."""
+    from monitorize.platform.stock_vkms_output import StockVkmsError, StockVkmsOutput
+
+    candidates = [entry for entry in stock_vkms_connectors()
+                  if entry["id"] == connector_id]
+    if len(candidates) != 1:
+        print("[ERROR] Select a connected stock VKMS connector before starting.", flush=True)
+        return 1
+    candidate = candidates[0]
+    if f"{width}x{height}" not in candidate["modes"]:
+        print(f"[ERROR] {connector_id} no longer advertises {width}x{height}.", flush=True)
+        return 1
+
+    controller = StockVkmsOutput(connector_id, desktop, candidate["connector_id"])
+    capture = None
+    changed = False
+    stopping = False
+    restore_ok = True
+
+    def cleanup(*_args):
+        nonlocal stopping, restore_ok
+        if stopping:
+            return restore_ok
+        stopping = True
+        if capture is not None:
+            try:
+                capture.close()
+            except Exception as exc:
+                print(f"[ERROR] Could not stop GNOME capture: {exc}", flush=True)
+        if changed:
+            try:
+                controller.restore()
+                print(f"[VKMS] Restored {connector_id} desktop state", flush=True)
+            except Exception as exc:
+                restore_ok = False
+                print(f"[ERROR] Could not restore {connector_id}: {exc}", flush=True)
+        return restore_ok
+
+    def stop_from_signal(*_args):
+        raise SystemExit(0 if cleanup() else 1)
+
+    signal.signal(signal.SIGINT, stop_from_signal)
+    signal.signal(signal.SIGTERM, stop_from_signal)
+    try:
+        controller.snapshot()
+        changed = True
+        actual = controller.apply(width, height, float(fps))
+        if not any(entry["id"] == connector_id
+                   and entry["connector_id"] == candidate["connector_id"]
+                   for entry in stock_vkms_connectors()):
+            raise StockVkmsError("The selected stock VKMS connector disappeared")
+        output_name = actual["name"]
+        event = {
+            "type": "headless_ready", "name": output_name,
+            "width": actual["width"], "height": actual["height"],
+            "fps": actual["refresh_rate"], "backend": "Sunshine", "vkms": True,
+        }
+        if "gnome" in desktop.lower():
+            from monitorize.platform.gnome_monitor_capture import GnomeMonitorCapture
+            capture = GnomeMonitorCapture()
+            event.update(capture.start(output_name))
+        print(f"MONITORIZE_EVENT {json.dumps(event, separators=(',', ':'))}", flush=True)
+        while True:
+            if capture is not None:
+                capture.dispatch()
+            if not any(entry["id"] == connector_id
+                       and entry["connector_id"] == candidate["connector_id"]
+                       for entry in stock_vkms_connectors()):
+                raise StockVkmsError("The selected stock VKMS connector disappeared")
+            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if ready:
+                line = sys.stdin.readline()
+                if not line or line.strip() == "quit":
+                    break
+        return 0 if cleanup() else 1
+    except Exception as exc:
+        print(f"[ERROR] Stock VKMS session failed: {exc}", flush=True)
+        return 1
+    finally:
+        cleanup()
 
 
 def run_vkms_headless(
@@ -140,11 +221,13 @@ def run_vkms_headless(
     desktop: str = "",
     *,
     custom_mode: bool = False,
+    connector_id: str = "",
     client: MonitorizeVkmsClient | None = None,
 ) -> int:
-    """Execute VKMS virtual display creation through the standalone monitorize-vkms CLI.
+    """Hold a VKMS display for one Monitorize session.
 
-    This function owns the session lifetime:
+    Stock modes temporarily configure the selected existing DRM connector.
+    Custom modes use the standalone CLI. The custom path owns this lifetime:
     1. Creates the display via `monitorize-vkms create`
     2. Emits MONITORIZE_EVENT headless_ready
     3. Remains alive waiting for stdin EOF or termination signals
@@ -153,6 +236,9 @@ def run_vkms_headless(
     if slot not in VKMS_SLOTS:
         print(f"[ERROR] Unsupported VKMS display slot: {slot}", flush=True)
         return 1
+
+    if not custom_mode:
+        return run_stock_vkms_headless(connector_id, width, height, fps, desktop)
 
     vkms_client = client or MonitorizeVkmsClient()
     if not vkms_client.is_available():

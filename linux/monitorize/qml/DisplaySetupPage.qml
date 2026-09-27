@@ -11,6 +11,13 @@ Item {
     property string mirrorOutputId: ""
     property var nativeResolutionOptions: ["1280x720 (16:9)", "1280x800 (16:10)", "1920x1080 (16:9)", "1920x1200 (16:10)", "2560x1440 (16:9)", "2560x1600 (16:10)", "3840x2160 (16:9)", "Custom..."]
     property var virtualDisplays: []
+    property string selectedVkmsConnector: ""
+    readonly property var vkmsConnectorOptions: {
+        let labels = ["Select stock VKMS connector…"]
+        for (let i = 0; i < backend.vkmsConnectors.length; ++i)
+            labels.push(backend.vkmsConnectors[i].id)
+        return labels
+    }
     readonly property bool vkmsSelected: displayType.currentText === "Extend"
         && displayCreator.currentText === "VKMS (Experimental)"
 
@@ -53,8 +60,9 @@ Item {
 
     function primaryDisplay() {
         return virtualDisplays.length > 0 ? virtualDisplays[0] : {
-            id: 1, resolution: "1920x1080", custom_w: "", custom_h: "",
-            fps: "60", custom_fps: ""
+            id: 1, resolution: vkmsSelected ? "" : "1920x1080",
+            custom_w: "", custom_h: "", fps: vkmsSelected ? "" : "60",
+            custom_fps: ""
         }
     }
 
@@ -121,27 +129,6 @@ Item {
         saveDisplayModes()
     }
 
-    function normalizeVkmsModes() {
-        if (!vkmsSelected) return
-        let options = backend.vkmsResolutionOptions
-        let fallback = ""
-        for (let i = 0; i < options.length; ++i) {
-            if (options[i] !== "Custom...") { fallback = options[i]; break }
-        }
-        if (!fallback) return
-        let updated = virtualDisplays.slice()
-        let changed = false
-        for (let i = 0; i < updated.length; ++i) {
-            if (updated[i].resolution !== "Custom..." && options.indexOf(updated[i].resolution) === -1) {
-                updated[i] = Object.assign({}, updated[i], {
-                    resolution: fallback, custom_w: "", custom_h: "", fps: "60", custom_fps: ""
-                })
-                changed = true
-            }
-        }
-        if (changed) virtualDisplays = updated
-    }
-
     function encoderDisplayValue(value) {
         return String(value || "").toLowerCase().indexOf("software") === 0
             ? "Software"
@@ -190,7 +177,8 @@ Item {
             nativeInput.checked,
             audio.checked,
             page.mirrorOutputId,
-            displayCreator.currentText === "VKMS (Experimental)" ? "vkms" : "native"
+            displayCreator.currentText === "VKMS (Experimental)" ? "vkms" : "native",
+            page.selectedVkmsConnector
         )
         saveDisplayModes()
     }
@@ -210,6 +198,7 @@ Item {
                 : "Compositor"
         )
         backend.refreshVkmsResolutionOptions()
+        selectedVkmsConnector = saved["vkms_connector"] || ""
         virtualDisplays = backend.loadVirtualDisplaySettings()
         encoder.selectValue(page.encoderDisplayValue(saved["sunshine_encoder"]))
         page.refreshGpuOptions(saved["sunshine_gpu"] || "")
@@ -270,7 +259,6 @@ Item {
                         onActivated: {
                             if (page.vkmsSelected) {
                                 backend.refreshVkmsResolutionOptions()
-                                page.normalizeVkmsModes()
                             } else {
                                 backend.ensureNativeCompositor()
                             }
@@ -281,7 +269,44 @@ Item {
                         visible: page.vkmsSelected
                         Layout.columnSpan: 2; Layout.fillWidth: true
                         wrapMode: Text.WordWrap; color: theme.textMuted
-                        text: "Creates a display using Linux's experimental VKMS path. Adding another display is unavailable in VKMS mode. Display layout and positioning are managed by your desktop environment."
+                        text: "DRM modes use an existing stock VKMS connector. Custom resolutions use monitorize-vkms. Adding another display is unavailable in VKMS mode."
+                    }
+                    Text {
+                        visible: page.vkmsSelected
+                        text: "Stock VKMS connector (DRM modes)"
+                        color: theme.textSecondary
+                    }
+                    CustomComboBox {
+                        id: vkmsConnector
+                        visible: page.vkmsSelected
+                        Layout.fillWidth: true
+                        model: page.vkmsConnectorOptions
+                        disabledIndex: 0
+                        currentIndex: Math.max(0, page.vkmsConnectorOptions.indexOf(page.selectedVkmsConnector))
+                        onActivated: {
+                            page.selectedVkmsConnector = currentIndex > 0 ? currentText : ""
+                            page.saveSettings()
+                            backend.refreshVkmsResolutionOptions()
+                        }
+                    }
+                    CustomButton {
+                        visible: page.vkmsSelected
+                        text: "Refresh VKMS connectors"
+                        primary: false
+                        onClicked: backend.refreshVkmsResolutionOptions()
+                    }
+                    Text {
+                        visible: page.vkmsSelected && backend.vkmsConnectors.length === 0
+                        Layout.columnSpan: 2; Layout.fillWidth: true
+                        wrapMode: Text.WordWrap; color: theme.textMuted
+                        text: "No connected stock VKMS connector was found. Load and connect stock VKMS outside Monitorize, then refresh this list."
+                    }
+                    Text {
+                        visible: page.vkmsSelected && page.selectedVkmsConnector !== ""
+                            && page.vkmsConnectorOptions.indexOf(page.selectedVkmsConnector) < 0
+                        Layout.columnSpan: 2; Layout.fillWidth: true
+                        wrapMode: Text.WordWrap; color: theme.textMuted
+                        text: "The saved stock VKMS connector is unavailable. Select a connected connector."
                     }
                     Text { text: "Monitor"; color: theme.textSecondary; visible: displayType.currentText === "Mirror" }
                     CustomComboBox {
@@ -316,8 +341,10 @@ Item {
                         displayConfig: modelData
                         canRemove: Number(modelData.id) === 2
                         vkmsSelected: page.vkmsSelected
+                        vkmsConnectorSelected: page.selectedVkmsConnector !== ""
                         nativeResolutionOptions: page.nativeResolutionOptions
                         vkmsResolutionOptions: backend.vkmsResolutionOptions
+                        vkmsRefreshRates: backend.vkmsRefreshRates
                         vkmsCustomCapabilityChecking: backend.vkmsCustomCapabilityChecking
                         vkmsCustomEdidCapability: backend.vkmsCustomEdidCapability
                         onConfigurationChanged: function(configuration) {
