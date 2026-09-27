@@ -20,6 +20,7 @@ class StockVkmsError(RuntimeError):
 
 
 _RECOVERY_FILE = Path.home() / ".config" / "monitorize" / "stock-vkms-recovery.json"
+_DISPLAY_COMMANDS = frozenset({"kscreen-doctor", "xrandr", "hyprctl", "swaymsg"})
 
 
 def remember_disabled_output(connector_id: str):
@@ -86,9 +87,16 @@ def recover_disabled_output(desktop: str) -> int:
 
 
 def _run(command: list[str], timeout: float = 5.0) -> str:
+    if (not command or command[0] not in _DISPLAY_COMMANDS
+            or any(not isinstance(argument, str) or "\0" in argument for argument in command)):
+        raise StockVkmsError("Refusing an invalid desktop display command")
     try:
-        result = subprocess.run(command, capture_output=True, text=True,
-                                timeout=timeout, check=False)
+        # Every executable is allowlisted above and arguments are passed directly
+        # without a shell, so connector and mode values cannot become shell syntax.
+        result = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            command, capture_output=True, text=True, timeout=timeout,
+            check=False, shell=False,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise StockVkmsError(f"Could not run {command[0]}: {exc}") from exc
     if result.returncode:
