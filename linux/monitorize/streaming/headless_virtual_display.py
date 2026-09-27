@@ -476,11 +476,12 @@ def run_gnome_headless(slot, width, height, fps, display_type="Extend"):
 def main():
     width = int(sys.argv[1]) if len(sys.argv) > 1 else 1920
     height = int(sys.argv[2]) if len(sys.argv) > 2 else 1080
-    fps = int(sys.argv[3]) if len(sys.argv) > 3 else 60
     slot = sys.argv[4] if len(sys.argv) > 4 else "primary"
     de = (sys.argv[5] if len(sys.argv) > 5 else os.environ.get("XDG_CURRENT_DESKTOP", "")).lower()
     creator = (sys.argv[6] if len(sys.argv) > 6 else "native").lower()
+    fps = (float(sys.argv[3]) if creator == "vkms" else int(sys.argv[3])) if len(sys.argv) > 3 else 60
     vkms_mode = (sys.argv[7] if len(sys.argv) > 7 else "standard").lower()
+    vkms_connector = sys.argv[8] if len(sys.argv) > 8 else ""
 
     if creator == "vkms":
         if os.path.isfile("/.flatpak-info"):
@@ -489,7 +490,8 @@ def main():
         from monitorize.platform.vkms_backend import run_vkms_headless
 
         return run_vkms_headless(
-            slot, width, height, fps, de, custom_mode=vkms_mode == "custom"
+            slot, width, height, fps, de, custom_mode=vkms_mode == "custom",
+            connector_id=vkms_connector,
         )
 
     if "kde" in de or "plasma" in de:

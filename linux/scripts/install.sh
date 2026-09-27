@@ -10,7 +10,7 @@
 #   ./install.sh --complete
 #   ./install.sh --partial
 #   ./install.sh --complete --cuda=auto  # auto, on, or off
-#   ./install.sh --complete --with-vkms  # install optional VKMS helper
+#   ./install.sh --complete --check-vkms  # check standalone VKMS CLI
 #   ./install.sh --rebuild-sunshine  # clean and rebuild Sunshine
 #   ./install.sh remove   # uninstall
 # ──────────────────────────────────────────────────────────────────────
@@ -632,7 +632,7 @@ select_cuda_policy() {
 print_usage() {
     cat <<'EOF'
 Usage: ./install.sh [--complete | --partial | --rebuild-sunshine] [--cuda=POLICY]
-       ./install.sh [--complete | --partial] --with-vkms
+       ./install.sh [--complete | --partial] --check-vkms
        ./install.sh remove
 
 With no arguments, an interactive menu selects the installation mode.
@@ -641,7 +641,7 @@ With no arguments, an interactive menu selects the installation mode.
   --rebuild-sunshine  Force a clean bundled Sunshine build (complete mode).
   --cuda=POLICY       Sunshine CUDA policy: auto (default), on, or off.
                       This option implies complete mode. --cuda POLICY also works.
-  --with-vkms         Check for standalone monitorize-vkms CLI.
+  --check-vkms        Check for standalone monitorize-vkms CLI.
   remove, uninstall   Remove the per-user source installation.
 
 MONITORIZE_CUDA=auto|on|off provides the same policy noninteractively.
@@ -682,7 +682,7 @@ INSTALL_MODE=""
 INSTALL_ACTION="install"
 CUDA_POLICY="auto"
 CUDA_POLICY_EXPLICIT=0
-INSTALL_VKMS_HELPER=0
+CHECK_VKMS_CLI=0
 
 while (( $# > 0 )); do
     argument="$1"
@@ -698,8 +698,8 @@ while (( $# > 0 )); do
             FORCE_SUNSHINE_REBUILD=1
             request_install_mode "complete"
             ;;
-        --with-vkms)
-            INSTALL_VKMS_HELPER=1
+        --check-vkms)
+            CHECK_VKMS_CLI=1
             ;;
         --cuda=*)
             set_cuda_policy "${argument#--cuda=}"
@@ -911,7 +911,7 @@ if ! "${HELPER_BUILD}" "${HELPER_PATH}"; then
 fi
 echo "✓ KDE virtual-output helper installed to ${HELPER_PATH}"
 
-if (( INSTALL_VKMS_HELPER )); then
+if (( CHECK_VKMS_CLI )); then
     check_vkms_cli
 else
     echo "Skipping optional VKMS check. Standalone monitorize-vkms can be installed separately."

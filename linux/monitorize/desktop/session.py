@@ -87,6 +87,7 @@ class Session(QObject):
                 and not os.path.isfile("/.flatpak-info")
                 and (virtual_display_creator or saved.get("virtual_display_creator", "native")) == "vkms"
             ),
+            vkms_connector=saved.get("vkms_connector", ""),
             encoder=saved.get("sunshine_encoder", "Auto") if custom else "Auto",
             codec=saved.get("sunshine_codec", "Auto") if custom else "Auto",
             gpu_id=saved.get("sunshine_gpu", "") if custom else "",
@@ -104,6 +105,7 @@ class Session(QObject):
                         else saved.get("virtual_display_creator", "native")
                     ),
                     vkms_custom_mode=bool(saved.get("vkms_custom_mode", False)),
+                    vkms_connector=saved.get("vkms_connector", ""),
                     encoder=saved.get("sunshine_encoder", "Auto"),
                     codec=saved.get("sunshine_codec", "Auto"),
                     gpu_id=saved.get("sunshine_gpu", ""),
@@ -145,6 +147,7 @@ class Session(QObject):
         config.pop("display_type")
         config.pop("mirror_output", None)
         config.pop("virtual_display_creator", None)
+        config.pop("vkms_connector", None)
         self.controller.start_third(**config)
 
     @property

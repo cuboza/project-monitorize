@@ -651,12 +651,12 @@ exit 0
         self.assertFalse((ROOT / "packaging/common/io.github.vinnavannewton.monitorize.source-vkms.policy").exists())
         self.assertFalse((ROOT / "linux/monitorize/platform/vkms_edid.py").exists())
 
-    def test_source_install_defers_vkms_polkit_until_explicitly_opted_in(self):
+    def test_source_install_checks_vkms_only_when_requested(self):
         installer = (ROOT / "linux/scripts/install.sh").read_text()
-        self.assertIn("--with-vkms)", installer)
-        self.assertIn("INSTALL_VKMS_HELPER=0", installer)
+        self.assertIn("--check-vkms)", installer)
+        self.assertIn("CHECK_VKMS_CLI=0", installer)
         self.assertIn(
-            "if (( INSTALL_VKMS_HELPER )); then\n    check_vkms_cli\nelse",
+            "if (( CHECK_VKMS_CLI )); then\n    check_vkms_cli\nelse",
             installer,
         )
         self.assertIn(
