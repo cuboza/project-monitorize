@@ -6,9 +6,32 @@ Item {
     id: page
     property int pairInstance: 1
     property bool logsExpanded: false
+    property bool followLatestLogs: true
+    property bool updatingLogScroll: false
+    function logAtBottom() {
+        let flick = logScroll.contentItem
+        return flick.contentY >= Math.max(0, flick.contentHeight - flick.height) - 16
+    }
+    function scrollLogsToEnd() {
+        let flick = logScroll.contentItem
+        page.updatingLogScroll = true
+        flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+        page.updatingLogScroll = false
+    }
     function refreshDiagnostics() {
         let snapshot = backend.sessionLog()
-        if (logArea.text !== snapshot) logArea.text = snapshot
+        if (logArea.text === snapshot) return
+        let previousY = logScroll.contentItem.contentY
+        page.updatingLogScroll = true
+        logArea.text = snapshot
+        Qt.callLater(function() {
+            let flick = logScroll.contentItem
+            if (page.followLatestLogs)
+                page.scrollLogsToEnd()
+            else
+                flick.contentY = Math.min(previousY, Math.max(0, flick.contentHeight - flick.height))
+            page.updatingLogScroll = false
+        })
     }
     function openPair(instance) {
         pairInstance = instance
@@ -23,7 +46,13 @@ Item {
         function onStreamingCodecMismatch(message) { page.logsExpanded = true }
     }
     onLogsExpandedChanged: {
-        if (logsExpanded) Qt.callLater(function() { page.refreshDiagnostics() })
+        if (logsExpanded) {
+            page.followLatestLogs = true
+            Qt.callLater(function() {
+                page.refreshDiagnostics()
+                page.scrollLogsToEnd()
+            })
+        }
     }
     Timer {
         interval: 1000; repeat: true; running: page.logsExpanded
@@ -128,7 +157,8 @@ Item {
                 CustomButton {
                     text: backend.sessionRunning || backend.sessionBusy || (backend.streamingBackend === "none" && backend.isStreaming) ? "Stop" : "Start"
                     danger: text === "Stop"
-                    enabled: text === "Stop" || backend.sessionMode === "Mirror" || backend.sessionHasDisplays
+                    enabled: text === "Stop" || (!backend.vkmsModuleLoading
+                        && (backend.sessionMode === "Mirror" || backend.sessionHasDisplays))
                     onClicked: text === "Stop" ? backend.stopSession() : backend.startSession()
                 }
                 CustomButton {
@@ -150,15 +180,51 @@ Item {
                 title: "Diagnostics & logs"; symbol: "logs"; expanded: page.logsExpanded
                 onExpandedChanged: page.logsExpanded = expanded
                 Layout.fillWidth: true
-                ScrollView {
+                Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 240
-                    TextArea {
-                        id: logArea
-                        text: ""
-                        readOnly: true; wrapMode: TextEdit.Wrap
-                        color: theme.textSecondary; font.family: "monospace"; font.pixelSize: 11
-                        background: Rectangle { color: theme.logBoxBackground; radius: 8 }
+                    ScrollView {
+                        id: logScroll
+                        anchors.fill: parent
+                        Connections {
+                            target: logScroll.contentItem
+                            function onContentYChanged() {
+                                if (!page.updatingLogScroll)
+                                    page.followLatestLogs = page.logAtBottom()
+                            }
+                        }
+                        TextArea {
+                            id: logArea
+                            text: ""
+                            readOnly: true; wrapMode: TextEdit.Wrap
+                            color: theme.textSecondary; font.family: "monospace"; font.pixelSize: 11
+                            background: Rectangle { color: theme.logBoxBackground; radius: 8 }
+                        }
+                    }
+                    Button {
+                        width: 36; height: 36
+                        anchors.right: parent.right; anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        visible: page.logsExpanded && !page.followLatestLogs
+                            && logScroll.contentItem.contentHeight > logScroll.contentItem.height
+                        text: "↓"
+                        Accessible.name: "Jump to latest logs"
+                        onClicked: {
+                            page.followLatestLogs = true
+                            page.scrollLogsToEnd()
+                        }
+                        background: Rectangle {
+                            radius: 18
+                            color: parent.hovered ? theme.buttonBackgroundHover : theme.buttonBackground
+                            border.color: theme.border
+                        }
+                        contentItem: Text {
+                            text: parent.text
+                            color: theme.buttonText
+                            font.pixelSize: 20
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                     }
                 }
             }

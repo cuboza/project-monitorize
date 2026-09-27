@@ -76,6 +76,9 @@ class MonitorizeBackend(QObject):
     streamingBackendChanged = pyqtSignal(str)
     vkmsResolutionOptionsChanged = pyqtSignal()
     vkmsConnectorsChanged = pyqtSignal()
+    vkmsModuleLoadingChanged = pyqtSignal()
+    vkmsModuleLoadFinished = pyqtSignal(bool, str)
+    vkmsStartFailed = pyqtSignal(str)
     vkmsCustomCapabilityCheckingChanged = pyqtSignal()
     vkmsCustomEdidCapabilityChanged = pyqtSignal()
     vkmsCustomCapabilityChecked = pyqtSignal(str)
@@ -112,6 +115,10 @@ class MonitorizeBackend(QObject):
         self._vkms_connectors = stock_vkms_connectors()
         self._vkms_resolution_options = ["Custom..."]
         self._vkms_refresh_rates = {}
+        self._vkms_module_load_process = None
+        self._vkms_module_finishing = False
+        self._vkms_module_deadline = 0.0
+        self._pending_vkms_start = None
         self.refreshVkmsResolutionOptions()
         self._vkms_custom_capability = None
         self._vkms_custom_capability_process = None
@@ -205,10 +212,19 @@ class MonitorizeBackend(QObject):
 
     @pyqtSlot()
     def startSession(self):
-        if self.virtualDisplayCleanupRunning:
+        if self.virtualDisplayCleanupRunning or self.vkmsModuleLoading:
             return
-        self._sync_web_settings()
         config = self.session.configuration()
+        if (config["display_type"] == "Extend"
+                and config["virtual_display_creator"] == "vkms"):
+            if not self.vkmsModuleLoaded:
+                self._pending_vkms_start = ("session", None)
+                self.loadStockVkmsModule()
+                return
+            if (not config["vkms_custom_mode"]
+                    and not self._resolve_stock_connector(self.session.preset_configuration)):
+                return
+        self._sync_web_settings()
         if (config["display_type"] == "Extend"
                 and config["virtual_display_creator"] == "native"
                 and not self.ensureNativeCompositor()):
@@ -282,6 +298,189 @@ class MonitorizeBackend(QObject):
     @pyqtProperty("QVariant", notify=vkmsConnectorsChanged)
     def vkmsConnectors(self):
         return [dict(entry) for entry in self._vkms_connectors]
+
+    @pyqtProperty(bool, notify=vkmsModuleLoadingChanged)
+    def vkmsModuleLoading(self):
+        return self._vkms_module_load_process is not None or self._vkms_module_finishing
+
+    @pyqtProperty(bool)
+    def vkmsModuleLoaded(self):
+        return Path("/sys/module/vkms").is_dir()
+
+    def _finish_vkms_module_load(self, process, success, message=""):
+        if process is not self._vkms_module_load_process:
+            return
+        if success:
+            try:
+                from monitorize.platform.stock_vkms_output import recover_disabled_output
+                recover_disabled_output(self._detected_de)
+            except Exception as exc:
+                success = False
+                message = f"Stock VKMS loaded, but previous output cleanup failed: {exc}"
+        self._vkms_module_load_process = None
+        self._vkms_module_finishing = False
+        process.deleteLater()
+        self.vkmsModuleLoadingChanged.emit()
+        if success:
+            self.refreshVkmsResolutionOptions()
+        else:
+            app_log.write("DISPLAY", f"Could not load stock VKMS: {message}", level=logging.ERROR)
+        self.vkmsModuleLoadFinished.emit(success, message)
+        pending = self._pending_vkms_start
+        self._pending_vkms_start = None
+        if pending:
+            if success:
+                QTimer.singleShot(0, lambda: self._resume_vkms_start(*pending))
+            else:
+                self.vkmsStartFailed.emit(message)
+
+    def _resume_vkms_start(self, kind, index):
+        if kind == "session":
+            self.startSession()
+        else:
+            self.launchPreset(index)
+
+    def _fail_vkms_load_without_process(self, message):
+        self.vkmsModuleLoadFinished.emit(False, message)
+        pending = self._pending_vkms_start
+        self._pending_vkms_start = None
+        if pending:
+            self.vkmsStartFailed.emit(message)
+
+    def _finish_existing_vkms_load(self):
+        self.vkmsModuleLoadFinished.emit(True, "")
+        pending = self._pending_vkms_start
+        self._pending_vkms_start = None
+        if pending:
+            QTimer.singleShot(0, lambda: self._resume_vkms_start(*pending))
+
+    def _resolve_stock_connector(self, preset=None):
+        """Keep a valid choice; recover a sole connector after card renumbering."""
+        self.refreshVkmsResolutionOptions()
+        connectors = self._vkms_connectors
+        selected = (preset["primary"].get("vkms_connector", "") if preset
+                    else load_display_settings().get("vkms_connector", ""))
+        if any(entry["id"] == selected for entry in connectors):
+            return True
+        if len(connectors) == 1:
+            selected = connectors[0]["id"]
+            if preset:
+                preset["primary"]["vkms_connector"] = selected
+            else:
+                save_display_settings(**{**load_display_settings(), "vkms_connector": selected})
+                self.session.configuration_changed()
+            self.refreshVkmsResolutionOptions()
+            return True
+        message = ("No connected stock VKMS connector is available." if not connectors
+                   else "Choose a stock VKMS connector in Configuration before starting.")
+        self.vkmsStartFailed.emit(message)
+        return False
+
+    def _disable_new_stock_output(self, process):
+        if process is not self._vkms_module_load_process:
+            return
+        connectors = stock_vkms_connectors()
+        if len(connectors) == 1:
+            from monitorize.platform.stock_vkms_output import StockVkmsOutput
+            connector = connectors[0]
+            try:
+                StockVkmsOutput(
+                    connector["id"], self._detected_de, connector["connector_id"]
+                ).disable()
+            except Exception as exc:
+                if time.monotonic() < self._vkms_module_deadline:
+                    QTimer.singleShot(250, lambda: self._disable_new_stock_output(process))
+                    return
+                self._finish_vkms_module_load(
+                    process, False, f"Stock VKMS loaded, but its default output could not be disabled: {exc}"
+                )
+                return
+            self._finish_vkms_module_load(process, True)
+            return
+        if time.monotonic() < self._vkms_module_deadline:
+            QTimer.singleShot(250, lambda: self._disable_new_stock_output(process))
+            return
+        self._finish_vkms_module_load(
+            process, False,
+            "Stock VKMS loaded, but its new default connector could not be identified."
+        )
+
+    def _complete_vkms_module_load(self, process, exit_code):
+        if process is not self._vkms_module_load_process:
+            return
+        loaded = Path("/sys/module/vkms").is_dir()
+        if exit_code == 0 and loaded:
+            message = ""
+        elif exit_code == 0:
+            message = "modprobe returned success, but stock VKMS is not loaded."
+        else:
+            message = (
+                bytes(process.readAllStandardOutput()).decode("utf-8", "replace").strip()[:300]
+                or "Authentication was cancelled or module loading failed."
+            )
+        if exit_code == 0 and loaded:
+            self._vkms_module_finishing = True
+            self._vkms_module_deadline = time.monotonic() + 5
+            self._disable_new_stock_output(process)
+        else:
+            self._finish_vkms_module_load(process, False, message)
+
+    @pyqtSlot()
+    def loadStockVkmsModule(self):
+        """Load stock VKMS for a selected, saved, or starting VKMS display."""
+        if self._vkms_module_load_process is not None:
+            return
+        if self.vkmsModuleLoaded:
+            self.refreshVkmsResolutionOptions()
+            QTimer.singleShot(0, self._finish_existing_vkms_load)
+            return
+
+        pkexec = shutil.which("pkexec")
+        modprobe = next(
+            (path for path in ("/usr/sbin/modprobe", "/sbin/modprobe", "/usr/bin/modprobe", "/bin/modprobe")
+             if Path(path).is_file() and os.access(path, os.X_OK)),
+            None,
+        )
+        if not pkexec or not modprobe:
+            missing = "Polkit (pkexec)" if not pkexec else "modprobe"
+            QTimer.singleShot(0, lambda: self._fail_vkms_load_without_process(
+                f"{missing} is not installed."
+            ))
+            return
+
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        process.finished.connect(
+            lambda exit_code, _status: self._complete_vkms_module_load(process, exit_code)
+        )
+        process.errorOccurred.connect(
+            lambda error: self._finish_vkms_module_load(
+                process, False, process.errorString()
+            ) if error == QProcess.ProcessError.FailedToStart else None
+        )
+        self._vkms_module_load_process = process
+        self.vkmsModuleLoadingChanged.emit()
+        process.start(pkexec, [modprobe, "vkms"])
+
+    @pyqtSlot()
+    def loadSavedStockVkmsAtStartup(self):
+        """Restore the saved VKMS choice once the main window has loaded."""
+        saved = load_display_settings()
+        if (saved["display_type"] != "Extend"
+                or saved["virtual_display_creator"] != "vkms"
+                or not self.vkmsCreatorAvailable):
+            return
+        if self.vkmsModuleLoaded:
+            try:
+                from monitorize.platform.stock_vkms_output import recover_disabled_output
+                recover_disabled_output(self._detected_de)
+                self.refreshVkmsResolutionOptions()
+            except Exception as exc:
+                self.vkmsModuleLoadFinished.emit(
+                    False, f"Could not clean up the previous VKMS output: {exc}"
+                )
+        else:
+            self.loadStockVkmsModule()
 
     @pyqtProperty("QVariant", notify=vkmsResolutionOptionsChanged)
     def vkmsRefreshRates(self):
@@ -627,7 +826,7 @@ class MonitorizeBackend(QObject):
 
         return active_outputs(self._detected_de)
 
-    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, bool, bool, bool, str, str, str)
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, bool, bool, bool, str, str, str)
     def saveDisplaySettings(
         self,
         resolution,
@@ -968,15 +1167,25 @@ class MonitorizeBackend(QObject):
 
     @pyqtSlot(int)
     def launchPreset(self, index):
-        if self.virtualDisplayCleanupRunning:
+        if self.virtualDisplayCleanupRunning or self.vkmsModuleLoading:
             return
         if index < 0 or index >= len(self._presets):
             self._set_preset_launch_status("Preset no longer exists.")
             return
-        self._sync_web_settings()
         preset = self._presets[index]
         import copy
         primary = preset["primary"]
+        if (primary["display_type"] == "Extend"
+                and primary.get("virtual_display_creator") == "vkms"):
+            if not self.vkmsModuleLoaded:
+                self._pending_vkms_start = ("preset", index)
+                self.loadStockVkmsModule()
+                return
+            preset = copy.deepcopy(preset)
+            primary = preset["primary"]
+            if not primary.get("vkms_custom_mode", False) and not self._resolve_stock_connector(preset):
+                return
+        self._sync_web_settings()
         if (primary["display_type"] == "Extend"
                 and (primary.get("virtual_display_creator", "native") != "vkms"
                      or not self.vkmsCreatorAvailable)

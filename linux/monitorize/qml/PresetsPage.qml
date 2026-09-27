@@ -27,7 +27,7 @@ Item {
                         required property int index
                         Layout.fillWidth: true
                         Text { text: modelData.name; color: theme.textPrimary; Layout.fillWidth: true }
-                        CustomButton { text: "Start"; enabled: !backend.isStreaming && !backend.sessionBusy; onClicked: backend.launchPreset(index) }
+                        CustomButton { text: "Start"; enabled: !backend.isStreaming && !backend.sessionBusy && !backend.vkmsModuleLoading; onClicked: backend.launchPreset(index) }
                         CustomButton {
                             text: "⋮"; primary: false; implicitWidth: 38
                             onClicked: presetMenu.open()

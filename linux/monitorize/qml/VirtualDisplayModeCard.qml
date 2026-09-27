@@ -240,7 +240,7 @@ Rectangle {
             visible: card.vkmsSelected && card.vkmsResolutionOptions.length === 1
             text: card.vkmsConnectorSelected
                 ? "The selected stock VKMS connector has no DRM modes. Custom resolution requires monitorize-vkms."
-                : "Select a stock VKMS connector to see its DRM modes. Custom resolution requires monitorize-vkms."
+                : "No stock VKMS DRM modes are available. Custom resolution requires monitorize-vkms."
             color: theme.textMuted; font.pixelSize: 12
             wrapMode: Text.WordWrap
             Layout.fillWidth: true

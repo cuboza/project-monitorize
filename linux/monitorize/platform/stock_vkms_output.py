@@ -8,13 +8,81 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import json
 import re
 import subprocess
+import tempfile
 import time
 
 
 class StockVkmsError(RuntimeError):
     pass
+
+
+_RECOVERY_FILE = Path.home() / ".config" / "monitorize" / "stock-vkms-recovery.json"
+
+
+def remember_disabled_output(connector_id: str):
+    """Record a disabled pre-session output before enabling it for capture."""
+    if not re.fullmatch(r"card\d+-Virtual-\d+", connector_id):
+        raise StockVkmsError("Invalid stock VKMS connector for recovery")
+    _RECOVERY_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=_RECOVERY_FILE.parent,
+            prefix=".stock-vkms-", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            os.chmod(temporary, 0o600)
+            json.dump({"connector_id": connector_id}, stream)
+        os.replace(temporary, _RECOVERY_FILE)
+    except OSError as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise StockVkmsError(f"Could not save stock VKMS recovery state: {exc}") from exc
+
+
+def clear_disabled_output(connector_id: str):
+    try:
+        saved = json.loads(_RECOVERY_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        raise StockVkmsError(f"Could not read stock VKMS recovery state: {exc}") from exc
+    if saved.get("connector_id") == connector_id:
+        try:
+            _RECOVERY_FILE.unlink(missing_ok=True)
+        except OSError as exc:
+            raise StockVkmsError(f"Could not clear stock VKMS recovery state: {exc}") from exc
+
+
+def recover_disabled_output(desktop: str) -> int:
+    """Disable an output left enabled by an interrupted stock VKMS session."""
+    try:
+        saved = json.loads(_RECOVERY_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError) as exc:
+        raise StockVkmsError(f"Could not read stock VKMS recovery state: {exc}") from exc
+    connector_id = saved.get("connector_id")
+    if not isinstance(connector_id, str) or not re.fullmatch(r"card\d+-Virtual-\d+", connector_id):
+        raise StockVkmsError("Invalid stock VKMS recovery state")
+    from monitorize.platform.vkms_backend import stock_vkms_connectors
+    connectors = stock_vkms_connectors()
+    if not connectors:
+        return 0
+    matches = [entry for entry in connectors if entry["id"] == connector_id]
+    if not matches and len(connectors) == 1:
+        matches = connectors
+    if len(matches) != 1:
+        raise StockVkmsError("Cannot identify the stock VKMS output left by the previous session")
+    output = StockVkmsOutput(matches[0]["id"], desktop, matches[0]["connector_id"])
+    output.snapshot()
+    was_active = output.before_mode is not None
+    output.disable()
+    _RECOVERY_FILE.unlink(missing_ok=True)
+    return int(was_active)
 
 
 def _run(command: list[str], timeout: float = 5.0) -> str:
@@ -206,19 +274,19 @@ class StockVkmsOutput:
             selector = str(self.before.get("id"))
             commands = [f"output.{selector}.enable",
                         f"output.{selector}.mode.{selected['token']}"]
-            if not self.before.get("enabled", True):
-                right_edge = max((int((entry.get("pos") or {}).get("x") or 0)
-                                  + int((entry.get("size") or {}).get("width") or 0)
-                                  for entry in km.kde_outputs()
-                                  if entry.get("enabled") and entry.get("name") != self.name),
-                                 default=0)
-                commands.append(f"output.{selector}.position.{right_edge},0")
-            else:
-                repair_position = km._extension_position(self.before, km.kde_outputs())
-                if repair_position is not None:
-                    commands.append(
-                        f"output.{selector}.position.{repair_position[0]},{repair_position[1]}"
-                    )
+            others = [entry for entry in km.kde_outputs()
+                      if entry.get("enabled") and entry.get("name") != self.name]
+            target_position = None
+            if others:
+                rightmost = max(others, key=lambda entry:
+                                km._position(entry)[0] + km._logical_width(entry))
+                target_position = (
+                    km._position(rightmost)[0] + km._logical_width(rightmost),
+                    km._position(rightmost)[1],
+                )
+                commands.append(
+                    f"output.{selector}.position.{target_position[0]},{target_position[1]}"
+                )
             _run(["kscreen-doctor", *commands])
         elif kind == "mutter":
             self._apply_mutter(selected)
@@ -250,6 +318,16 @@ class StockVkmsOutput:
                 command.extend(["pos", str(right_edge), "0"])
             _run(command)
         self._verify(selected)
+        if kind == "kde" and target_position is not None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                current = next((entry for entry in km.kde_outputs()
+                                if entry.get("name") == self.name), None)
+                if current and km._position(current) == target_position:
+                    break
+                time.sleep(0.1)
+            else:
+                raise StockVkmsError(f"The desktop did not attach {self.name} to the active layout")
         return dict(selected, name=self.output_name)
 
     def _apply_mutter(self, selected):
@@ -364,6 +442,68 @@ class StockVkmsOutput:
             time.sleep(0.1)
         raise StockVkmsError(f"The desktop did not activate {self.name} at the requested mode")
 
+    def disable(self):
+        """Hide a newly created stock output without disconnecting its DRM connector."""
+        if self.before is None:
+            self.snapshot()
+        if self.before_mode is None:
+            return
+        kind = self._kind()
+        if kind == "kde":
+            from monitorize.platform import kde_virtual_monitor as km
+            if sum(bool(entry.get("enabled")) for entry in km.kde_outputs()) < 2:
+                raise StockVkmsError("Cannot disable the last active desktop output")
+            _run(["kscreen-doctor", f"output.{self.before['id']}.disable"])
+        elif kind == "mutter":
+            from monitorize.platform import gnome_virtual_monitor as gm
+            dbus = gm._dbus()
+            interface = self._mutter_interface()
+            state = interface.GetCurrentState()
+            logical = [entry for entry in state[2]
+                       if self.name not in gm._logical_connector_names(entry)]
+            if not logical:
+                raise StockVkmsError("Cannot disable the last active desktop output")
+            current_modes = gm._current_modes(state[1])
+            properties = gm._monitor_properties_by_connector(state[1])
+            configs = []
+            for entry in logical:
+                target = {"x": entry[0], "y": entry[1], "scale": entry[2],
+                          "transform": entry[3], "primary": entry[4]}
+                config = gm._logical_monitor_config(
+                    dbus, entry, current_modes, properties, target)
+                if config is None:
+                    raise StockVkmsError("Mutter cannot preserve the current display layout")
+                configs.append(config)
+            interface.ApplyMonitorsConfig(
+                gm._typed(dbus, "UInt32", int(state[0])),
+                gm._typed(dbus, "UInt32", gm.APPLY_METHOD_TEMPORARY),
+                dbus.Array(configs, signature="(iiduba(ssa{sv}))"),
+                gm._variant_dict(dbus, self._mutter_global_properties(state)),
+            )
+        elif kind == "x11":
+            from monitorize.platform.stock_vkms_xrandr import xrandr_outputs
+            if sum(bool(entry["active"]) for entry in xrandr_outputs()) < 2:
+                raise StockVkmsError("Cannot disable the last active desktop output")
+            _run(["xrandr", "--output", self.output_name, "--off"])
+        elif kind == "hyprland":
+            from monitorize.platform.display_controller import DisplayController
+            outputs = DisplayController("hyprland")._monitor_json() or []
+            if sum(not entry.get("disabled", False) for entry in outputs) < 2:
+                raise StockVkmsError("Cannot disable the last active desktop output")
+            _run(["hyprctl", "keyword", "monitor", f"{self.name},disable"])
+        elif kind == "sway":
+            from monitorize.platform.display_controller import DisplayController
+            outputs = DisplayController("sway").sway_outputs()
+            if sum(bool(entry.get("active")) for entry in outputs) < 2:
+                raise StockVkmsError("Cannot disable the last active desktop output")
+            _run(["swaymsg", "output", self.name, "disable"])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self._current() is None:
+                return
+            time.sleep(0.1)
+        raise StockVkmsError(f"The desktop did not disable {self.name}")
+
     def restore(self):
         if self.before is None:
             return
@@ -420,6 +560,7 @@ class StockVkmsOutput:
         self._verify_restored()
 
     def _verify_restored(self):
+        kind = self._kind()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             current = self._current()
@@ -430,9 +571,15 @@ class StockVkmsOutput:
                 abs(float(current[key]) - float(old[key])) <= (0.75 if key == "refresh_rate" else 0)
                 for key in ("width", "height", "refresh_rate")
             ):
-                return
+                if kind != "kde":
+                    return
+                from monitorize.platform import kde_virtual_monitor as km
+                output = next((entry for entry in km.kde_outputs()
+                               if entry.get("name") == self.name), None)
+                if output and km._position(output) == km._position(self.before):
+                    return
             time.sleep(0.1)
-        raise StockVkmsError(f"The desktop did not restore {self.name} to its previous mode")
+        raise StockVkmsError(f"The desktop did not restore {self.name} to its previous mode and layout")
 
     def _restore_mutter(self):
         from monitorize.platform import gnome_virtual_monitor as gm

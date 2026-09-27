@@ -12,6 +12,8 @@ Item {
     property var nativeResolutionOptions: ["1280x720 (16:9)", "1280x800 (16:10)", "1920x1080 (16:9)", "1920x1200 (16:10)", "2560x1440 (16:9)", "2560x1600 (16:10)", "3840x2160 (16:9)", "Custom..."]
     property var virtualDisplays: []
     property string selectedVkmsConnector: ""
+    property string vkmsLoadError: ""
+    property bool vkmsSelectionPending: false
     readonly property var vkmsConnectorOptions: {
         let labels = ["Select stock VKMS connector…"]
         for (let i = 0; i < backend.vkmsConnectors.length; ++i)
@@ -20,6 +22,55 @@ Item {
     }
     readonly property bool vkmsSelected: displayType.currentText === "Extend"
         && displayCreator.currentText === "VKMS (Experimental)"
+
+    Connections {
+        target: backend
+        function onVkmsModuleLoadFinished(success, message) {
+            if (!page.vkmsSelectionPending) {
+                if (success) {
+                    page.vkmsLoadError = ""
+                    backend.refreshVkmsResolutionOptions()
+                    if (page.vkmsSelected && page.reconcileVkmsConnector()) {
+                        page.saveSettings()
+                        backend.refreshVkmsResolutionOptions()
+                    }
+                } else if (page.vkmsSelected) {
+                    page.vkmsLoadError = message || "Could not load stock VKMS."
+                }
+                return
+            }
+            page.vkmsSelectionPending = false
+            if (success) {
+                page.vkmsLoadError = ""
+                displayCreator.selectValue("VKMS (Experimental)")
+                backend.refreshVkmsResolutionOptions()
+                page.reconcileVkmsConnector()
+                page.saveSettings()
+                backend.refreshVkmsResolutionOptions()
+            } else {
+                page.vkmsLoadError = message || "Could not load stock VKMS."
+                displayCreator.selectValue("Compositor")
+                page.saveSettings()
+            }
+        }
+    }
+
+    function reconcileVkmsConnector() {
+        let connectors = backend.vkmsConnectors
+        let selected = page.selectedVkmsConnector
+        if (connectors.length === 1) {
+            selected = connectors[0].id
+        } else {
+            let present = false
+            for (let i = 0; i < connectors.length; ++i) {
+                if (connectors[i].id === selected) present = true
+            }
+            if (!present) selected = ""
+        }
+        if (selected === page.selectedVkmsConnector) return false
+        page.selectedVkmsConnector = selected
+        return true
+    }
 
     function mirrorResolutionLabel() {
         for (let i = 0; i < mirrorOutputs.length; ++i) {
@@ -197,7 +248,6 @@ Item {
                 ? "VKMS (Experimental)"
                 : "Compositor"
         )
-        backend.refreshVkmsResolutionOptions()
         selectedVkmsConnector = saved["vkms_connector"] || ""
         virtualDisplays = backend.loadVirtualDisplaySettings()
         encoder.selectValue(page.encoderDisplayValue(saved["sunshine_encoder"]))
@@ -214,6 +264,13 @@ Item {
         audio.checked = saved["enable_audio"] === true
         createOnly.checked = backend.streamingBackend === "none"
         loading = false
+        backend.refreshVkmsResolutionOptions()
+        if (page.vkmsSelected && backend.vkmsModuleLoaded) {
+            if (page.reconcileVkmsConnector()) {
+                page.saveSettings()
+                backend.refreshVkmsResolutionOptions()
+            }
+        }
     }
 
     ScrollView {
@@ -234,7 +291,7 @@ Item {
             SectionCard {
                 title: "DISPLAY"; symbol: "display"
                 Layout.fillWidth: true
-                enabled: !backend.isStreaming
+                enabled: !backend.isStreaming && !backend.vkmsModuleLoading
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 2; columnSpacing: 24; rowSpacing: 12
@@ -258,27 +315,45 @@ Item {
                             : ["Compositor"]
                         onActivated: {
                             if (page.vkmsSelected) {
-                                backend.refreshVkmsResolutionOptions()
+                                page.vkmsLoadError = ""
+                                if (backend.vkmsModuleLoaded) {
+                                    backend.refreshVkmsResolutionOptions()
+                                    page.reconcileVkmsConnector()
+                                    page.saveSettings()
+                                    backend.refreshVkmsResolutionOptions()
+                                } else {
+                                    page.vkmsSelectionPending = true
+                                    displayCreator.selectValue("Compositor")
+                                    backend.loadStockVkmsModule()
+                                }
                             } else {
+                                page.vkmsLoadError = ""
                                 backend.ensureNativeCompositor()
+                                page.saveSettings()
                             }
-                            page.saveSettings()
                         }
+                    }
+                    Text {
+                        visible: backend.vkmsModuleLoading || page.vkmsLoadError !== ""
+                        Layout.columnSpan: 2; Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: page.vkmsLoadError ? "#ff9a9a" : theme.textMuted
+                        text: page.vkmsLoadError || "Waiting for authorization to load stock VKMS…"
                     }
                     Text {
                         visible: page.vkmsSelected
                         Layout.columnSpan: 2; Layout.fillWidth: true
                         wrapMode: Text.WordWrap; color: theme.textMuted
-                        text: "DRM modes use an existing stock VKMS connector. Custom resolutions use monitorize-vkms. Adding another display is unavailable in VKMS mode."
+                        text: "DRM modes use stock VKMS. Custom resolutions use monitorize-vkms. Adding another display is unavailable in VKMS mode."
                     }
                     Text {
-                        visible: page.vkmsSelected
+                        visible: page.vkmsSelected && backend.vkmsConnectors.length > 1
                         text: "Stock VKMS connector (DRM modes)"
                         color: theme.textSecondary
                     }
                     CustomComboBox {
                         id: vkmsConnector
-                        visible: page.vkmsSelected
+                        visible: page.vkmsSelected && backend.vkmsConnectors.length > 1
                         Layout.fillWidth: true
                         model: page.vkmsConnectorOptions
                         disabledIndex: 0
@@ -288,25 +363,6 @@ Item {
                             page.saveSettings()
                             backend.refreshVkmsResolutionOptions()
                         }
-                    }
-                    CustomButton {
-                        visible: page.vkmsSelected
-                        text: "Refresh VKMS connectors"
-                        primary: false
-                        onClicked: backend.refreshVkmsResolutionOptions()
-                    }
-                    Text {
-                        visible: page.vkmsSelected && backend.vkmsConnectors.length === 0
-                        Layout.columnSpan: 2; Layout.fillWidth: true
-                        wrapMode: Text.WordWrap; color: theme.textMuted
-                        text: "No connected stock VKMS connector was found. Load and connect stock VKMS outside Monitorize, then refresh this list."
-                    }
-                    Text {
-                        visible: page.vkmsSelected && page.selectedVkmsConnector !== ""
-                            && page.vkmsConnectorOptions.indexOf(page.selectedVkmsConnector) < 0
-                        Layout.columnSpan: 2; Layout.fillWidth: true
-                        wrapMode: Text.WordWrap; color: theme.textMuted
-                        text: "The saved stock VKMS connector is unavailable. Select a connected connector."
                     }
                     Text { text: "Monitor"; color: theme.textSecondary; visible: displayType.currentText === "Mirror" }
                     CustomComboBox {

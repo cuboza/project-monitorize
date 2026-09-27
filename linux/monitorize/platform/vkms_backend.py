@@ -85,8 +85,15 @@ def stock_vkms_connectors(drm_root: Path | None = None) -> list[dict]:
             continue
         card_name = connector.name.split("-", 1)[0]
         try:
-            driver = (root / card_name / "device" / "driver").resolve(strict=True)
-            if driver.name != "vkms":
+            device = (root / card_name / "device").resolve(strict=True)
+            driver = (device / "driver").resolve(strict=True)
+            stock_faux_device = (
+                device.name == "vkms"
+                and device.parent.name == "faux"
+                and driver.name == "faux_driver"
+                and driver.parent.parent.name == "faux"
+            )
+            if driver.name != "vkms" and not stock_faux_device:
                 continue
             if (connector / "status").read_text(encoding="utf-8").strip() != "connected":
                 continue
@@ -132,7 +139,10 @@ def run_stock_vkms_headless(
     connector_id: str, width: int, height: int, fps: int | float, desktop: str
 ) -> int:
     """Temporarily configure one existing stock VKMS output for a session."""
-    from monitorize.platform.stock_vkms_output import StockVkmsError, StockVkmsOutput
+    from monitorize.platform.stock_vkms_output import (
+        StockVkmsError, StockVkmsOutput, clear_disabled_output,
+        remember_disabled_output,
+    )
 
     candidates = [entry for entry in stock_vkms_connectors()
                   if entry["id"] == connector_id]
@@ -149,6 +159,7 @@ def run_stock_vkms_headless(
     changed = False
     stopping = False
     restore_ok = True
+    recovery_recorded = False
 
     def cleanup(*_args):
         nonlocal stopping, restore_ok
@@ -163,6 +174,8 @@ def run_stock_vkms_headless(
         if changed:
             try:
                 controller.restore()
+                if recovery_recorded:
+                    clear_disabled_output(connector_id)
                 print(f"[VKMS] Restored {connector_id} desktop state", flush=True)
             except Exception as exc:
                 restore_ok = False
@@ -176,6 +189,9 @@ def run_stock_vkms_headless(
     signal.signal(signal.SIGTERM, stop_from_signal)
     try:
         controller.snapshot()
+        if controller.before_mode is None:
+            remember_disabled_output(connector_id)
+            recovery_recorded = True
         changed = True
         actual = controller.apply(width, height, float(fps))
         if not any(entry["id"] == connector_id
