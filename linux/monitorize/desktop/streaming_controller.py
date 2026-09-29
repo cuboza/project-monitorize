@@ -606,8 +606,9 @@ class StreamingController(QObject):
             and os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
             and capture == "portal"
         )
-        if (load_general_settings().get("sunshine_web_settings_enabled")
-                and not portal_source_type and not pipewire_node):
+        # Capture choices saved in Sunshine remain authoritative even when
+        # Monitorize's embedded settings UI is disabled.
+        if not portal_source_type:
             requested = get_saved_sunshine_config(instance).get("capture", "").lower()
             if cosmic_portal:
                 compatible = requested == "portal"
