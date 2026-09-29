@@ -45,7 +45,10 @@ class SunshineOnlyPackagingTest(unittest.TestCase):
             "!force_non_h264 && video::last_encoder_probe_supported_yuv444_for_codec[0]",
             patch_text,
         )
-        self.assertIn("MONITORIZE_STRICT_CODEC_REJECTED", patch_text)
+        self.assertIn(
+            "MONITORIZE_STRICT_CODEC_REJECTED",
+            (ROOT / "external/sunshine/src/rtsp.cpp").read_text(),
+        )
         self.assertIn(
             "config::video.hevc_mode == 1 && config::video.av1_mode == 1",
             patch_text,
@@ -795,7 +798,8 @@ exit 0
         self.assertIn("%dir %{_datadir}/monitorize/sunshine", spec)
         self.assertIn("MONITORIZE_SUNSHINE_BIN", spec)
         self.assertIn("MONITORIZE_SUNSHINE_ASSETS_DIR", spec)
-        self.assertIn("sunshine-portal-token-scope.patch", spec)
+        self.assertIn("SUNSHINE_ENABLE_CUDA=ON", spec)
+        self.assertIn("CUDA_FAIL_ON_MISSING=ON", spec)
         self.assertIn("sunshine_ffmpeg_sha256", spec)
         self.assertIn("BuildRequires:  boost-devel >= 1.89.0", spec)
         self.assertIn("BuildRequires:  firewalld-filesystem", spec)
