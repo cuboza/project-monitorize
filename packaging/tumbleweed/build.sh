@@ -61,6 +61,11 @@ actual_ffmpeg_tag="$(git -C external/sunshine/third-party/build-deps describe --
 [[ "${ffmpeg_tag}" == "${actual_ffmpeg_tag}" ]] || \
     die "The RPM spec FFmpeg tag (${ffmpeg_tag}) does not match build-deps (${actual_ffmpeg_tag:-untagged})."
 
+cuda_version="$(spec_global cuda_version)"
+cuda_build="$(spec_global cuda_build)"
+[[ -n "${cuda_version}" && -n "${cuda_build}" ]] || die "Missing CUDA version or build in the RPM spec."
+cuda_archive_name="cuda_${cuda_version}_${cuda_build}_linux.run"
+
 cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 [[ "${cpu_count}" =~ ^[1-9][0-9]*$ ]] || cpu_count=1
 default_jobs="${cpu_count}"
@@ -99,14 +104,16 @@ cp "${SPEC_FILE}" "${topdir}/SPECS/monitorize.spec"
 cp "${SYSUSERS_FILE}" "${topdir}/SOURCES/monitorize.sysusers"
 
 artifact_stage="${tmp_root}/artifacts"
-mkdir -p "${artifact_stage}/x86_64" "${artifact_stage}/source"
+mkdir -p "${artifact_stage}/x86_64" "${artifact_stage}/source" "${OUTPUT_ROOT}/cache"
 build_log="${artifact_stage}/build.log"
 echo "Building Monitorize ${version} for openSUSE Tumbleweed x86_64 with ${build_jobs} job(s)…"
 podman run --rm \
     --arch amd64 \
     --security-opt label=disable \
     --env "MONITORIZE_RPM_JOBS=${build_jobs}" \
+    --env "MONITORIZE_CUDA_ARCHIVE=/cuda-cache/${cuda_archive_name}" \
     --volume "${artifact_stage}:/artifacts" \
+    --volume "${OUTPUT_ROOT}/cache:/cuda-cache" \
     --volume "${topdir}:/work" \
     "${IMAGE}" \
     bash -euxo pipefail -c '

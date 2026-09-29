@@ -1,6 +1,7 @@
 %global sunshine_commit f27b52b1f525f41b3c3b8901f7cb29bea4fe0c4a
 %global cuda_version 13.1.1
 %global cuda_build 590.48.01
+%global cuda_sha256 24ff323723722781436804b392a48f691cb40de9808095d3e2192d0db6dfb8e4
 %global sunshine_ffmpeg_tag v2026.724.203728
 %global sunshine_ffmpeg_sha256 2c27d4694b4ed0e734f497d4bd62f1b3662cbbc4ded2a69f2dc4b703441eebb3
 
@@ -115,13 +116,14 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
 %build
 %pyproject_wheel
 
-cuda_archive=%{_builddir}/cuda_%{cuda_version}_%{cuda_build}_linux.run
-aria2c --max-connection-per-server=8 --split=8 --min-split-size=1M \
+cuda_archive=${MONITORIZE_CUDA_ARCHIVE:-%{_builddir}/cuda_%{cuda_version}_%{cuda_build}_linux.run}
+mkdir -p "$(dirname "$cuda_archive")"
+aria2c --continue=true --max-connection-per-server=8 --split=8 --min-split-size=1M \
     --file-allocation=none --max-tries=3 --retry-wait=5 \
     --summary-interval=30 --console-log-level=warn \
-    --dir=%{_builddir} --out="$(basename "$cuda_archive")" \
+    --dir="$(dirname "$cuda_archive")" --out="$(basename "$cuda_archive")" \
     https://developer.download.nvidia.com/compute/cuda/%{cuda_version}/local_installers/cuda_%{cuda_version}_%{cuda_build}_linux.run
-sha256sum "$cuda_archive"
+echo '%{cuda_sha256}  '"$cuda_archive" | sha256sum --check --strict
 bash "$cuda_archive" --silent --toolkit --toolkitpath=%{_builddir}/cuda \
     --no-drm --no-man-page --no-opengl-libs --override
 patch -p2 --directory=%{_builddir}/cuda \
@@ -151,6 +153,7 @@ cmake -B sunshine-build -S external/sunshine \
     -DBOOST_USE_STATIC=OFF \
     -DCUDA_FAIL_ON_MISSING=ON \
     -DCMAKE_CUDA_COMPILER=%{_builddir}/cuda/bin/nvcc \
+    -DCMAKE_CUDA_FLAGS=-Xcompiler=-fPIC \
     -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/gcc-15 \
     -DFFMPEG_PREPARED_BINARIES="$PWD/.ffmpeg-prepared" \
     -DGLAD_SKIP_PIP_INSTALL=ON \
