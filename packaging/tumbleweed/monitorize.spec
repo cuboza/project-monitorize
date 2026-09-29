@@ -17,6 +17,7 @@ Source2:        monitorize.sysusers
 ExclusiveArch:  x86_64
 
 BuildRequires:  boost-devel >= 1.89.0
+BuildRequires:  aria2
 BuildRequires:  libboost_filesystem-devel
 BuildRequires:  libboost_locale-devel
 BuildRequires:  libboost_log-devel
@@ -108,7 +109,10 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
 
 %build
 cuda_archive=%{_builddir}/cuda_%{cuda_version}_%{cuda_build}_linux.run
-curl --fail --location --retry 3 --output "$cuda_archive" \
+aria2c --max-connection-per-server=8 --split=8 --min-split-size=1M \
+    --file-allocation=none --max-tries=3 --retry-wait=5 \
+    --summary-interval=30 --console-log-level=warn \
+    --dir=%{_builddir} --out="$(basename "$cuda_archive")" \
     https://developer.download.nvidia.com/compute/cuda/%{cuda_version}/local_installers/cuda_%{cuda_version}_%{cuda_build}_linux.run
 sha256sum "$cuda_archive"
 bash "$cuda_archive" --silent --toolkit --toolkitpath=%{_builddir}/cuda \
