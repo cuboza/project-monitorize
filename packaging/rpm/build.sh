@@ -148,6 +148,7 @@ podman run --rm \
         dnf -y --setopt=install_weak_deps=False install /tmp/monitorize.rpm desktop-file-utils
         test ! -e /root/.config/monitorize
         rpm -V monitorize
+        rpm -q --filecaps monitorize | grep -q "cap_sys_admin"
         getent group monitorize-input
         test -x /usr/bin/monitorize
         test -x /usr/bin/monitorize-kde-virtual-output
@@ -175,6 +176,17 @@ assert command[0] == "/usr/libexec/monitorize/sunshine"
 assert get_sunshine_assets_dir(command[0]) == "/usr/share/monitorize/sunshine/assets"
 assert QQuickWidget is not None
 assert main_window is not None
+PYTHON
+        QT_QPA_PLATFORM=offscreen python3 - <<'\''PYTHON'\''
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtQml import QQmlComponent, QQmlEngine
+from monitorize.platform.utils import QML_DIR
+
+app = QGuiApplication([])
+engine = QQmlEngine()
+component = QQmlComponent(engine, QUrl.fromLocalFile(f"{QML_DIR}/main.qml"))
+assert not component.isError(), "\n".join(error.toString() for error in component.errors())
 PYTHON
         dnf -y remove monitorize
         test ! -e /usr/bin/monitorize
