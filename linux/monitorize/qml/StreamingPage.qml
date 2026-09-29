@@ -155,7 +155,7 @@ Item {
                     onClicked: { presetName.text = ""; presetMessage.text = ""; presetPopup.open() }
                 }
                 CustomButton {
-                    text: backend.sessionRunning || backend.sessionBusy || (backend.streamingBackend === "none" && backend.isStreaming) ? "Stop" : "Start"
+                    text: backend.isStreaming || backend.sessionBusy ? "Stop" : "Start"
                     danger: text === "Stop"
                     enabled: text === "Stop" || (!backend.vkmsModuleLoading
                         && (backend.sessionMode === "Mirror" || backend.sessionHasDisplays))

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PyQt6.QtCore import QCoreApplication
@@ -14,6 +15,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class FirstRunSetupTest(unittest.TestCase):
+
+    def test_session_running_follows_ready_controller_even_without_session_flag(self):
+        controller = SimpleNamespace(streaming=True, primary_ready=True)
+        backend = SimpleNamespace(streaming=controller)
+        self.assertTrue(MonitorizeBackend.sessionRunning.fget(backend))
+        controller.primary_ready = False
+        self.assertFalse(MonitorizeBackend.sessionRunning.fget(backend))
+        controller.streaming = False
+        controller.primary_ready = True
+        self.assertFalse(MonitorizeBackend.sessionRunning.fget(backend))
 
     @patch("monitorize.desktop.backend.load_general_settings", return_value={})
     @patch("monitorize.desktop.backend.load_presets", return_value=[])
