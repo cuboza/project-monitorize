@@ -15,6 +15,10 @@ from monitorize.desktop.streaming_controller import (
 
 class SunshineControllerTest(unittest.TestCase):
     def setUp(self):
+        readiness = patch("monitorize.desktop.streaming_controller.get_sunshine_startup_status",
+                          return_value=("ready", ""))
+        self.readiness = readiness.start()
+        self.addCleanup(readiness.stop)
         session = patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"})
         session.start()
         self.addCleanup(session.stop)
@@ -34,6 +38,65 @@ class SunshineControllerTest(unittest.TestCase):
         controller = StreamingController(de, "192.0.2.1")
         self.addCleanup(lambda: controller.sunshine_watchdog_timer.stop())
         return controller
+
+    def test_readiness_waits_for_initialization_and_cancels_on_stop(self):
+        controller = self.controller()
+        controller.streaming = True
+        callback = Mock()
+        self.readiness.return_value = ("pending", "")
+        controller._await_sunshine_ready(1, callback)
+        callback.assert_not_called()
+        self.assertFalse(controller.primary_ready)
+        with patch("monitorize.desktop.streaming_controller.check_sunshine_health",
+                   return_value=(True, None, "")), patch(
+                   "monitorize.desktop.streaming_controller.get_sunshine_strict_selection_error",
+                   return_value=""):
+            controller._check_sunshine_health()
+            callback.assert_not_called()
+            self.readiness.return_value = ("ready", "")
+            controller._check_sunshine_health()
+            callback.assert_called_once()
+            controller._check_sunshine_health()
+            callback.assert_called_once()
+        self.readiness.return_value = ("pending", "")
+        controller._await_sunshine_ready(1, callback)
+        with patch("monitorize.desktop.streaming_controller.stop_sunshine"):
+            controller.stop()
+        self.assertFalse(controller._pending_sunshine_ready)
+
+    def test_readiness_timeout_stops_without_marking_ready(self):
+        controller = self.controller()
+        controller.streaming = True
+        callback = Mock()
+        self.readiness.return_value = ("pending", "")
+        with patch("monitorize.desktop.streaming_controller.time.monotonic", return_value=0):
+            controller._await_sunshine_ready(1, callback)
+        with patch("monitorize.desktop.streaming_controller.check_sunshine_health",
+                   return_value=(True, None, "")), patch(
+                   "monitorize.desktop.streaming_controller.time.monotonic", return_value=121), patch(
+                   "monitorize.desktop.streaming_controller.QTimer.singleShot") as schedule:
+            controller._check_sunshine_health()
+        callback.assert_not_called()
+        self.assertIn("timed out", controller.status)
+        schedule.assert_called_once_with(0, controller.stop)
+
+    def test_second_display_waits_for_its_own_initialization(self):
+        controller = self.controller()
+        controller.streaming = True
+        controller.primary_ready = True
+        controller.third_streaming = True
+        callback = Mock()
+        self.readiness.return_value = ("pending", "")
+        controller._await_sunshine_ready(2, callback)
+        self.assertTrue(controller.primary_ready)
+        self.assertFalse(controller.third_ready)
+        with patch("monitorize.desktop.streaming_controller.check_sunshine_health",
+                   return_value=(True, None, "")), patch(
+                   "monitorize.desktop.streaming_controller.get_sunshine_strict_selection_error",
+                   return_value=""):
+            self.readiness.return_value = ("ready", "")
+            controller._check_sunshine_health()
+        callback.assert_called_once()
 
     def test_moonlight_codec_names_cover_all_strict_choices(self):
         self.assertEqual(_moonlight_codec_name("H.264 (AVC)"), "H.264 (AVC)")

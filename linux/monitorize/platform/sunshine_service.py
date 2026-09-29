@@ -20,6 +20,7 @@ PR_SET_PDEATHSIG = 1
 _SUNSHINE_PROCESS: subprocess.Popen | None = None
 _SUNSHINE_PROCESSES: dict[int, subprocess.Popen] = {}
 _SUNSHINE_SETTINGS_INSTANCES: set[int] = set()
+_SUNSHINE_PREVIOUS_LOG_HEADERS: dict[int, str] = {}
 
 
 def _set_pdeathsig() -> None:
@@ -218,6 +219,47 @@ def get_sunshine_last_error(instance: int = 1, max_lines: int = 5) -> str:
     return ""
 
 
+def get_sunshine_startup_status(instance: int = 1) -> tuple[str, str]:
+    """Return pending/ready/failed for the latest launch, including capture health.
+
+    Encoder probes can succeed with synthetic frames while PipeWire fails.
+    Allow probe retries until initialization finishes; a later streaming state
+    clears a previous PipeWire failure. Ignore diagnostics from older launches.
+    """
+    try:
+        with open(os.path.join(get_sunshine_config_dir(instance), "sunshine.log"),
+                  encoding="utf-8", errors="replace") as source:
+            log = source.read()
+    except OSError:
+        return "pending", ""
+    marker = log.rfind("Info: Sunshine version:")
+    if marker < 0:
+        return "pending", ""
+    line_start = log.rfind("\n", 0, marker) + 1
+    header = log[line_start:].splitlines()[0]
+    if header == _SUNSHINE_PREVIOUS_LOG_HEADERS.get(instance):
+        return "pending", ""
+    log = log[marker:]
+    initialized = False
+    encoder = False
+    capture_error = ""
+    for line in log.splitlines():
+        if "Video failed to find working encoder" in line or "Fatal:" in line:
+            return "failed", line.strip()
+        if "[pipewire]" in line:
+            if "PipeWire stream error" in line or "Pipewire Error" in line:
+                capture_error = line.strip()
+            elif "PipeWire stream state:" in line and "-> streaming" in line:
+                capture_error = ""
+        if "Found H.264 encoder:" in line:
+            encoder = True
+        if "Configuration UI available at" in line:
+            initialized = True
+    if initialized and capture_error:
+        return "failed", "Screen capture failed: " + capture_error
+    return ("ready", "") if initialized and encoder else ("pending", "")
+
+
 def check_sunshine_health(instance: int = 1) -> tuple[bool, int | None, str]:
     """Check if Sunshine instance is alive.
 
@@ -233,6 +275,9 @@ def check_sunshine_health(instance: int = 1) -> tuple[bool, int | None, str]:
             error = get_sunshine_last_error(instance)
             if "Video failed to find working encoder" in error:
                 return False, None, error
+            state, detail = get_sunshine_startup_status(instance)
+            if state == "failed":
+                return False, None, detail
             return True, None, ""
 
 
@@ -571,6 +616,14 @@ def start_sunshine(
         if assets_dir:
             candidate_env["SUNSHINE_ASSETS_DIR"] = assets_dir
         try:
+            try:
+                with open(os.path.join(get_sunshine_config_dir(instance), "sunshine.log"),
+                          "rb") as source:
+                    headers = [line.decode("utf-8", "replace").strip()
+                               for line in source if b"Info: Sunshine version:" in line]
+                _SUNSHINE_PREVIOUS_LOG_HEADERS[instance] = headers[-1] if headers else ""
+            except OSError:
+                _SUNSHINE_PREVIOUS_LOG_HEADERS.pop(instance, None)
             proc = subprocess.Popen(
                 cmd,
                 env=candidate_env,
