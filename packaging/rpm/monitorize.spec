@@ -14,13 +14,13 @@ URL:            https://github.com/vinnavannewton/project-monitorize
 Source0:        %{name}-%{version}.tar.gz
 Source1:        https://github.com/LizardByte/build-deps/releases/download/%{sunshine_ffmpeg_tag}/Linux-x86_64-ffmpeg.tar.gz
 Source2:        monitorize.sysusers
-Source3:        cuda_%{cuda_version}_%{cuda_build}_linux.run
 
 ExclusiveArch:  x86_64
 
 BuildRequires:  bash
 BuildRequires:  boost-devel >= 1.89.0
 BuildRequires:  cmake >= 3.26
+BuildRequires:  curl
 BuildRequires:  desktop-file-utils
 BuildRequires:  firewalld-filesystem
 BuildRequires:  gcc15
@@ -114,7 +114,11 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
 %build
 %pyproject_wheel
 
-bash %{SOURCE3} --silent --toolkit --toolkitpath=%{_builddir}/cuda \
+cuda_archive=%{_builddir}/cuda_%{cuda_version}_%{cuda_build}_linux.run
+curl --fail --location --retry 3 --output "$cuda_archive" \
+    https://developer.download.nvidia.com/compute/cuda/%{cuda_version}/local_installers/cuda_%{cuda_version}_%{cuda_build}_linux.run
+sha256sum "$cuda_archive"
+bash "$cuda_archive" --silent --toolkit --toolkitpath=%{_builddir}/cuda \
     --no-drm --no-man-page --no-opengl-libs --override
 patch -p2 --directory=%{_builddir}/cuda \
     < external/sunshine/packaging/linux/patches/x86_64/cuda-13-math_functions.patch

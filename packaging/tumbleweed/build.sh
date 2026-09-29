@@ -64,7 +64,7 @@ actual_ffmpeg_tag="$(git -C external/sunshine/third-party/build-deps describe --
 cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 [[ "${cpu_count}" =~ ^[1-9][0-9]*$ ]] || cpu_count=1
 default_jobs="${cpu_count}"
-(( default_jobs > 4 )) && default_jobs=4
+(( default_jobs > 2 )) && default_jobs=2
 build_jobs="${MONITORIZE_BUILD_JOBS:-${default_jobs}}"
 [[ "${build_jobs}" =~ ^[1-9][0-9]*$ ]] || die "MONITORIZE_BUILD_JOBS must be a positive integer."
 
@@ -121,14 +121,6 @@ podman run --rm \
         curl --fail --location --retry 3 --output "${ffmpeg_archive}" "${ffmpeg_url}"
         echo "${ffmpeg_sha}  ${ffmpeg_archive}" | sha256sum --check --strict
 
-        cuda_version="$(awk '\''$1 == "%global" && $2 == "cuda_version" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
-        cuda_build="$(awk '\''$1 == "%global" && $2 == "cuda_build" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
-        test -n "${cuda_version}" && test -n "${cuda_build}"
-        cuda_name="cuda_${cuda_version}_${cuda_build}_linux.run"
-        curl --fail --location --retry 3 \
-            --output "/work/SOURCES/${cuda_name}" \
-            "https://developer.download.nvidia.com/compute/cuda/${cuda_version}/local_installers/${cuda_name}"
-        sha256sum "/work/SOURCES/${cuda_name}" > /artifacts/cuda-toolkit.sha256
 
         export HOME=/tmp/monitorize-rpmbuild-home
         mkdir -p "${HOME}"
@@ -198,7 +190,7 @@ PYTHON
 mkdir -p "${OUTPUT_ROOT}/x86_64" "${OUTPUT_ROOT}/source"
 cp "${artifact_stage}/x86_64/"*.rpm "${OUTPUT_ROOT}/x86_64/"
 cp "${artifact_stage}/source/"*.rpm "${OUTPUT_ROOT}/source/"
-cp "${build_log}" "${artifact_stage}/cuda-toolkit.sha256" "${OUTPUT_ROOT}/"
+cp "${build_log}" "${OUTPUT_ROOT}/"
 echo "openSUSE Tumbleweed RPM build and smoke test completed."
 echo "Primary RPM: ${OUTPUT_ROOT}/x86_64/$(basename "${main_rpm}")"
 echo "Source RPM: ${OUTPUT_ROOT}/source/"
