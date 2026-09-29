@@ -1,4 +1,6 @@
-%global sunshine_commit e3ce79f3b966df388e905a3c6b3784832a328e34
+%global sunshine_commit f27b52b1f525f41b3c3b8901f7cb29bea4fe0c4a
+%global cuda_version 13.1.1
+%global cuda_build 590.48.01
 %global sunshine_ffmpeg_tag v2026.724.203728
 %global sunshine_ffmpeg_sha256 2c27d4694b4ed0e734f497d4bd62f1b3662cbbc4ded2a69f2dc4b703441eebb3
 
@@ -12,6 +14,7 @@ URL:            https://github.com/vinnavannewton/project-monitorize
 Source0:        %{name}-%{version}.tar.gz
 Source1:        https://github.com/LizardByte/build-deps/releases/download/%{sunshine_ffmpeg_tag}/Linux-x86_64-ffmpeg.tar.gz
 Source2:        monitorize.sysusers
+Source3:        cuda_%{cuda_version}_%{cuda_build}_linux.run
 
 ExclusiveArch:  x86_64
 
@@ -49,6 +52,7 @@ BuildRequires:  nodejs22-npm
 BuildRequires:  numactl-devel
 BuildRequires:  openssl-devel
 BuildRequires:  opus-devel
+BuildRequires:  patch
 BuildRequires:  pipewire-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  pulseaudio-libs-devel
@@ -94,7 +98,6 @@ Sunshine instances.
 %prep
 %autosetup
 patch --batch --forward -d external/sunshine -p1 < packaging/sunshine-strict-selection.patch
-patch --batch --forward -d external/sunshine -p1 < packaging/sunshine-portal-token-scope.patch
 mkdir .ffmpeg-prepared
 tar -xzf %{SOURCE1} -C .ffmpeg-prepared --strip-components=1 --no-same-owner
 # Fedora 44 ships a newer compatible Boost. Sunshine requests 1.89 EXACT and
@@ -110,6 +113,12 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
 
 %build
 %pyproject_wheel
+
+bash %{SOURCE3} --silent --toolkit --toolkitpath=%{_builddir}/cuda \
+    --no-drm --no-man-page --no-opengl-libs --override
+patch -p2 --directory=%{_builddir}/cuda \
+    < external/sunshine/packaging/linux/patches/x86_64/cuda-13-math_functions.patch
+test -x %{_builddir}/cuda/bin/nvcc
 
 CC=/usr/bin/gcc-15 \
 RPM_OPT_FLAGS="%{build_cflags}" \
@@ -127,11 +136,14 @@ export COMMIT=%{sunshine_commit}
 
 cmake -B sunshine-build -S external/sunshine \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
     -DBUILD_DOCS=OFF \
     -DBUILD_TESTS=OFF \
     -DBOOST_USE_STATIC=OFF \
-    -DCUDA_FAIL_ON_MISSING=OFF \
+    -DCUDA_FAIL_ON_MISSING=ON \
+    -DCMAKE_CUDA_COMPILER=%{_builddir}/cuda/bin/nvcc \
+    -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/gcc-15 \
     -DFFMPEG_PREPARED_BINARIES="$PWD/.ffmpeg-prepared" \
     -DGLAD_SKIP_PIP_INSTALL=ON \
     -DNPM=/usr/bin/npm \
@@ -148,6 +160,7 @@ cmake -B sunshine-build -S external/sunshine \
     -DSUNSHINE_ENABLE_X11=ON \
     -DSUNSHINE_EXECUTABLE_PATH=%{_libexecdir}/monitorize/sunshine
 cmake --build sunshine-build --parallel %{_smp_build_ncpus}
+grep -q 'src/platform/linux/cuda.cu' sunshine-build/compile_commands.json
 
 
 %install
@@ -244,7 +257,7 @@ PYTHON
 %license %{_licensedir}/%{name}/Sunshine-LICENSE
 %{_bindir}/monitorize
 %{_bindir}/monitorize-kde-virtual-output
-%{_libexecdir}/monitorize/sunshine
+%caps(cap_sys_admin,cap_sys_nice+p) %{_libexecdir}/monitorize/sunshine
 %{_libexecdir}/monitorize/monitorize-system-setup
 %dir %{_datadir}/monitorize
 %dir %{_datadir}/monitorize/sunshine

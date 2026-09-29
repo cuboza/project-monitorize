@@ -45,7 +45,7 @@ for line in "${submodule_status[@]}"; do
     submodule_paths+=("${path}")
 done
 
-[[ -z "$(git status --porcelain)" ]] || die "The working tree must be clean. Commit or stash tracked and untracked changes before building."
+[[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "Tracked changes must be committed or stashed before building."
 
 version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
 spec_version="$(awk '$1 == "Version:" { print $2; exit }' "${SPEC_FILE}")"
@@ -72,6 +72,9 @@ build_jobs="${MONITORIZE_BUILD_JOBS:-${default_jobs}}"
 mkdir -p "${OUTPUT_ROOT}"
 tmp_root="$(mktemp -d "${OUTPUT_ROOT}/.build.XXXXXX")"
 cleanup() {
+    if (( $? != 0 )) && [[ -f "${build_log:-}" ]]; then
+        cp "${build_log}" "${OUTPUT_ROOT}/failed-build.log" || true
+    fi
     chmod -R u+rwX "${tmp_root}" 2>/dev/null || true
     rm -rf "${tmp_root}"
 }
@@ -96,15 +99,15 @@ tar --sort=name --mtime="@${source_date_epoch}" --owner=0 --group=0 --numeric-ow
 cp "${SPEC_FILE}" "${topdir}/SPECS/monitorize.spec"
 cp "${SYSUSERS_FILE}" "${topdir}/SOURCES/monitorize.sysusers"
 
-mkdir -p "${OUTPUT_ROOT}/x86_64" "${OUTPUT_ROOT}/source"
-find "${OUTPUT_ROOT}" -type f -name '*.rpm' -delete
-build_log="${OUTPUT_ROOT}/build.log"
+artifact_stage="${tmp_root}/artifacts"
+mkdir -p "${artifact_stage}/x86_64" "${artifact_stage}/source"
+build_log="${artifact_stage}/build.log"
 echo "Building Monitorize ${version} for Fedora ${FEDORA_VERSION} x86_64 with ${build_jobs} job(s)…"
 podman run --rm \
     --arch amd64 \
     --security-opt label=disable \
     --env "MONITORIZE_RPM_JOBS=${build_jobs}" \
-    --volume "${OUTPUT_ROOT}:/artifacts" \
+    --volume "${artifact_stage}:/artifacts" \
     --volume "${topdir}:/work" \
     "${IMAGE}" \
     bash -euxo pipefail -c '
@@ -117,6 +120,15 @@ podman run --rm \
         curl --fail --location --retry 3 --output "${ffmpeg_archive}" "${ffmpeg_url}"
         echo "${ffmpeg_sha}  ${ffmpeg_archive}" | sha256sum --check --strict
 
+        cuda_version="$(awk '\''$1 == "%global" && $2 == "cuda_version" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
+        cuda_build="$(awk '\''$1 == "%global" && $2 == "cuda_build" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
+        test -n "${cuda_version}" && test -n "${cuda_build}"
+        cuda_name="cuda_${cuda_version}_${cuda_build}_linux.run"
+        curl --fail --location --retry 3 \
+            --output "/work/SOURCES/${cuda_name}" \
+            "https://developer.download.nvidia.com/compute/cuda/${cuda_version}/local_installers/${cuda_name}"
+        sha256sum "/work/SOURCES/${cuda_name}" > /artifacts/cuda-toolkit.sha256
+
         export HOME=/tmp/monitorize-rpmbuild-home
         mkdir -p "${HOME}"
         rpmbuild -ba \
@@ -128,7 +140,7 @@ podman run --rm \
         cp /work/SRPMS/*.src.rpm /artifacts/source/
     ' 2>&1 | tee "${build_log}"
 
-mapfile -t main_rpms < <(find "${OUTPUT_ROOT}/x86_64" -maxdepth 1 -type f \
+mapfile -t main_rpms < <(find "${artifact_stage}/x86_64" -maxdepth 1 -type f \
     -name "monitorize-${version}-*.fc${FEDORA_VERSION}.x86_64.rpm" \
     ! -name '*-debuginfo-*' ! -name '*-debugsource-*' | sort)
 (( ${#main_rpms[@]} == 1 )) || die "Expected exactly one primary Monitorize RPM, found ${#main_rpms[@]}."
@@ -181,6 +193,10 @@ PYTHON
         test ! -e /usr/share/applications/monitorize.desktop
     '
 
+mkdir -p "${OUTPUT_ROOT}/x86_64" "${OUTPUT_ROOT}/source"
+cp "${artifact_stage}/x86_64/"*.rpm "${OUTPUT_ROOT}/x86_64/"
+cp "${artifact_stage}/source/"*.rpm "${OUTPUT_ROOT}/source/"
+cp "${build_log}" "${artifact_stage}/cuda-toolkit.sha256" "${OUTPUT_ROOT}/"
 echo "Fedora ${FEDORA_VERSION} RPM build and smoke test completed."
-echo "Primary RPM: ${main_rpm}"
+echo "Primary RPM: ${OUTPUT_ROOT}/x86_64/$(basename "${main_rpm}")"
 echo "Source RPM: ${OUTPUT_ROOT}/source/"

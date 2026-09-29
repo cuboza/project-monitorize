@@ -1,4 +1,6 @@
-%global sunshine_commit e3ce79f3b966df388e905a3c6b3784832a328e34
+%global sunshine_commit f27b52b1f525f41b3c3b8901f7cb29bea4fe0c4a
+%global cuda_version 12.9.1
+%global cuda_build 575.57.08
 %global sunshine_ffmpeg_tag v2026.724.203728
 %global sunshine_ffmpeg_sha256 2c27d4694b4ed0e734f497d4bd62f1b3662cbbc4ded2a69f2dc4b703441eebb3
 %global _firewalld_dir %{_prefix}/lib/firewalld
@@ -12,6 +14,7 @@ URL:            https://github.com/vinnavannewton/project-monitorize
 Source0:        %{name}-%{version}.tar.gz
 Source1:        https://github.com/LizardByte/build-deps/releases/download/%{sunshine_ffmpeg_tag}/Linux-x86_64-ffmpeg.tar.gz
 Source2:        monitorize.sysusers
+Source3:        cuda_%{cuda_version}_%{cuda_build}_linux.run
 ExclusiveArch:  x86_64
 
 BuildRequires:  boost-devel >= 1.89.0
@@ -24,6 +27,8 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  firewall-macros
 BuildRequires:  firewalld
 BuildRequires:  gcc-c++
+BuildRequires:  gcc14
+BuildRequires:  gcc14-c++
 BuildRequires:  git-core
 BuildRequires:  glib2-devel
 BuildRequires:  libX11-devel
@@ -48,6 +53,7 @@ BuildRequires:  libxcb-devel
 BuildRequires:  Mesa-libGL-devel
 BuildRequires:  nodejs
 BuildRequires:  npm
+BuildRequires:  patch
 BuildRequires:  nlohmann_json-devel
 BuildRequires:  pkgconfig
 BuildRequires:  pipewire-devel
@@ -94,7 +100,6 @@ Sunshine instances.
 %prep
 %autosetup
 patch --batch --forward -d external/sunshine -p1 < packaging/sunshine-strict-selection.patch
-patch --batch --forward -d external/sunshine -p1 < packaging/sunshine-portal-token-scope.patch
 mkdir .ffmpeg-prepared
 tar -xzf %{SOURCE1} -C .ffmpeg-prepared --strip-components=1 --no-same-owner
 # Tumbleweed can ship a newer compatible Boost than Sunshine's exact request.
@@ -102,11 +107,17 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
     external/sunshine/cmake/dependencies/Boost_Sunshine.cmake
 
 %build
-CC=gcc RPM_OPT_FLAGS="%{optflags}" \
+bash %{SOURCE3} --silent --toolkit --toolkitpath=%{_builddir}/cuda \
+    --no-drm --no-man-page --no-opengl-libs --override
+patch -p2 --directory=%{_builddir}/cuda \
+    < external/sunshine/packaging/linux/patches/x86_64/cuda-12-math_functions.patch
+test -x %{_builddir}/cuda/bin/nvcc
+
+CC=/usr/bin/gcc-14 RPM_OPT_FLAGS="%{optflags}" \
     linux/native/kde_virtual_output/build.sh monitorize-kde-virtual-output
 
-export CC=gcc
-export CXX=g++
+export CC=/usr/bin/gcc-14
+export CXX=/usr/bin/g++-14
 export CFLAGS="%{optflags}"
 export CXXFLAGS="%{optflags}"
 unset LDFLAGS
@@ -116,11 +127,14 @@ export COMMIT=%{sunshine_commit}
 
 cmake -B sunshine-build -S external/sunshine \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
     -DBUILD_DOCS=OFF \
     -DBUILD_TESTS=OFF \
     -DBOOST_USE_STATIC=OFF \
-    -DCUDA_FAIL_ON_MISSING=OFF \
+    -DCUDA_FAIL_ON_MISSING=ON \
+    -DCMAKE_CUDA_COMPILER=%{_builddir}/cuda/bin/nvcc \
+    -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/gcc-14 \
     -DFFMPEG_PREPARED_BINARIES="$PWD/.ffmpeg-prepared" \
     -DGLAD_SKIP_PIP_INSTALL=ON \
     -DNPM=/usr/bin/npm \
@@ -137,6 +151,7 @@ cmake -B sunshine-build -S external/sunshine \
     -DSUNSHINE_ENABLE_X11=ON \
     -DSUNSHINE_EXECUTABLE_PATH=%{_libexecdir}/monitorize/sunshine
 cmake --build sunshine-build --parallel %{_smp_build_ncpus}
+grep -q 'src/platform/linux/cuda.cu' sunshine-build/compile_commands.json
 
 %install
 install -d %{buildroot}%{python3_sitelib}
@@ -227,7 +242,7 @@ PYTHON
 %{python3_sitelib}/monitorize/
 %{_bindir}/monitorize
 %{_bindir}/monitorize-kde-virtual-output
-%{_libexecdir}/monitorize/sunshine
+%caps(cap_sys_admin,cap_sys_nice+p) %{_libexecdir}/monitorize/sunshine
 %{_libexecdir}/monitorize/monitorize-system-setup
 %dir %{_datadir}/monitorize
 %dir %{_datadir}/monitorize/sunshine
