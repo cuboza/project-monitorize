@@ -1,4 +1,4 @@
-%global sunshine_commit f27b52b1f525f41b3c3b8901f7cb29bea4fe0c4a
+%global sunshine_commit 7ccce79ab0e6a1db920162e09d5ef11634e1bb84
 %global cuda_version 12.9.1
 %global cuda_build 575.57.08
 %global cuda_sha256 0f6d806ddd87230d2adbe8a6006a9d20144fdbda9de2d6acc677daa5d036417a
@@ -293,7 +293,7 @@ PYTHON
 - Set current Monitorize package version to 0.33.
 - Supply the legacy libxml2 ABI required by the CUDA installer on Tumbleweed.
 - Reuse cached CUDA, FFmpeg, and zypper downloads across local build attempts.
-- Add an offline --rebuild mode using a prepared dependency image.
+- Add an offline --rebuild-offline mode using a prepared dependency image.
 
 * Mon Sep 21 2026 Monitorize contributors <noreply@example.com> - 0.39-0
 - Release Monitorize 0.39 with compositor-native and VKMS virtual displays.

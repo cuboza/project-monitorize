@@ -12,10 +12,10 @@ readonly OUTPUT_ROOT="${PROJECT_ROOT}/dist/rpm/tumbleweed"
 rebuild=false
 case "${1:-}" in
     "") ;;
-    --rebuild) rebuild=true; shift ;;
-    *) echo "Usage: $0 [--rebuild]" >&2; exit 2 ;;
+    --rebuild-offline) rebuild=true; shift ;;
+    *) echo "Usage: $0 [--rebuild-offline]" >&2; exit 2 ;;
 esac
-(( $# == 0 )) || { echo "Usage: $0 [--rebuild]" >&2; exit 2; }
+(( $# == 0 )) || { echo "Usage: $0 [--rebuild-offline]" >&2; exit 2; }
 
 die() {
     echo "Error: $*" >&2
