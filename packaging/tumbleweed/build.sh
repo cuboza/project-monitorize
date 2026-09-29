@@ -9,6 +9,14 @@ readonly SPEC_FILE="${SCRIPT_DIR}/monitorize.spec"
 readonly SYSUSERS_FILE="${PROJECT_ROOT}/packaging/fedora/monitorize.sysusers"
 readonly OUTPUT_ROOT="${PROJECT_ROOT}/dist/rpm/tumbleweed"
 
+rebuild=false
+case "${1:-}" in
+    "") ;;
+    --rebuild) rebuild=true; shift ;;
+    *) echo "Usage: $0 [--rebuild]" >&2; exit 2 ;;
+esac
+(( $# == 0 )) || { echo "Usage: $0 [--rebuild]" >&2; exit 2; }
+
 die() {
     echo "Error: $*" >&2
     exit 1
@@ -65,6 +73,11 @@ cuda_version="$(spec_global cuda_version)"
 cuda_build="$(spec_global cuda_build)"
 [[ -n "${cuda_version}" && -n "${cuda_build}" ]] || die "Missing CUDA version or build in the RPM spec."
 cuda_archive_name="cuda_${cuda_version}_${cuda_build}_linux.run"
+buildreq_hash="$(sed -n '/^BuildRequires:/p' "${SPEC_FILE}" | sha256sum | awk '{print substr($1, 1, 16)}')"
+deps_image="localhost/monitorize-builddeps:tumbleweed-${buildreq_hash}"
+if [[ "${rebuild}" == true ]]; then
+    podman image exists "${deps_image}" || die "No prepared build image (${deps_image}). Run ./packaging/tumbleweed/build.sh once first."
+fi
 
 cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 [[ "${cpu_count}" =~ ^[1-9][0-9]*$ ]] || cpu_count=1
@@ -76,7 +89,11 @@ build_jobs="${MONITORIZE_BUILD_JOBS:-${default_jobs}}"
 mkdir -p "${OUTPUT_ROOT}"
 tmp_root="$(mktemp -d "${OUTPUT_ROOT}/.build.XXXXXX")"
 cleanup() {
-    if (( $? != 0 )) && [[ -f "${build_log:-}" ]]; then
+    local status=$?
+    if [[ -n "${deps_container:-}" ]]; then
+        podman rm -f "${deps_container}" >/dev/null 2>&1 || true
+    fi
+    if (( status != 0 )) && [[ -f "${build_log:-}" ]]; then
         cp "${build_log}" "${OUTPUT_ROOT}/failed-build.log" || true
     fi
     chmod -R u+rwX "${tmp_root}" 2>/dev/null || true
@@ -104,30 +121,63 @@ cp "${SPEC_FILE}" "${topdir}/SPECS/monitorize.spec"
 cp "${SYSUSERS_FILE}" "${topdir}/SOURCES/monitorize.sysusers"
 
 artifact_stage="${tmp_root}/artifacts"
-mkdir -p "${artifact_stage}/x86_64" "${artifact_stage}/source" "${OUTPUT_ROOT}/cache"
+mkdir -p "${artifact_stage}/x86_64" "${artifact_stage}/source" \
+    "${OUTPUT_ROOT}/cache/zypp-packages" "${OUTPUT_ROOT}/cache/sources" \
+    "${OUTPUT_ROOT}/cache/npm"
 build_log="${artifact_stage}/build.log"
+if [[ "${rebuild}" == false ]]; then
+    deps_container="monitorize-tumbleweed-builddeps-$$"
+    podman run --name "${deps_container}" \
+        --arch amd64 \
+        --security-opt label=disable \
+        --volume "${OUTPUT_ROOT}/cache/zypp-packages:/var/cache/zypp/packages" \
+        --volume "${topdir}:/work" \
+        "${IMAGE}" \
+        bash -euxo pipefail -c '
+            zypper --non-interactive --gpg-auto-import-keys refresh
+            zypper --non-interactive modifyrepo --keep-packages --all
+            zypper --non-interactive install --no-recommends curl rpm-build rpmlint python-rpm-macros systemd-rpm-macros
+            mapfile -t requirements < <(rpmspec --define "_topdir /work" -q --buildrequires /work/SPECS/monitorize.spec | sort -u)
+            zypper --non-interactive install --no-recommends "${requirements[@]}"
+        ' 2>&1 | tee "${build_log}"
+    podman commit "${deps_container}" "${deps_image}" >/dev/null
+    podman rm "${deps_container}" >/dev/null
+    deps_container=""
+fi
 echo "Building Monitorize ${version} for openSUSE Tumbleweed x86_64 with ${build_jobs} job(s)…"
-podman run --rm \
-    --arch amd64 \
-    --security-opt label=disable \
+run_options=(--rm --pull=never --arch amd64 --security-opt label=disable)
+if [[ "${rebuild}" == true ]]; then
+    run_options+=(--network=none --env MONITORIZE_OFFLINE=1 --env npm_config_offline=true)
+fi
+podman run "${run_options[@]}" \
     --env "MONITORIZE_RPM_JOBS=${build_jobs}" \
     --env "MONITORIZE_CUDA_ARCHIVE=/cuda-cache/${cuda_archive_name}" \
+    --env npm_config_cache=/npm-cache \
     --volume "${artifact_stage}:/artifacts" \
     --volume "${OUTPUT_ROOT}/cache:/cuda-cache" \
+    --volume "${OUTPUT_ROOT}/cache/zypp-packages:/var/cache/zypp/packages" \
+    --volume "${OUTPUT_ROOT}/cache/sources:/source-cache" \
+    --volume "${OUTPUT_ROOT}/cache/npm:/npm-cache" \
     --volume "${topdir}:/work" \
-    "${IMAGE}" \
+    "${deps_image}" \
     bash -euxo pipefail -c '
-        zypper --non-interactive --gpg-auto-import-keys refresh
-        zypper --non-interactive install --no-recommends curl rpm-build rpmlint python-rpm-macros systemd-rpm-macros
-        mapfile -t requirements < <(rpmspec --define "_topdir /work" -q --buildrequires /work/SPECS/monitorize.spec | sort -u)
-        zypper --non-interactive install --no-recommends "${requirements[@]}"
-
-        ffmpeg_url="$(rpmspec --define "_topdir /work" -P /work/SPECS/monitorize.spec | awk '\''$1 == "Source1:" && !found { value = $2; found = 1 } END { print value }'\'')"
+        cache_source() {
+            local url="$1" sha="$2" archive
+            archive="/source-cache/$(basename "${url}")"
+            if ! echo "${sha}  ${archive}" | sha256sum --check --strict --status; then
+                [[ "${MONITORIZE_OFFLINE:-0}" != 1 ]] || { echo "Missing cached source: ${archive}. Run a normal build first." >&2; exit 1; }
+                curl --fail --location --retry 3 --output "${archive}.part" "${url}"
+                echo "${sha}  ${archive}.part" | sha256sum --check --strict
+                mv "${archive}.part" "${archive}"
+            fi
+            cp "${archive}" /work/SOURCES/
+        }
+        ffmpeg_url="$(rpmspec --define "_topdir /work" -P /work/SPECS/monitorize.spec | awk '\''$1 == "Source1:" { print $2; exit }'\'')"
         ffmpeg_sha="$(awk '\''$1 == "%global" && $2 == "sunshine_ffmpeg_sha256" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
-        ffmpeg_archive="/work/SOURCES/$(basename "${ffmpeg_url}")"
-        curl --fail --location --retry 3 --output "${ffmpeg_archive}" "${ffmpeg_url}"
-        echo "${ffmpeg_sha}  ${ffmpeg_archive}" | sha256sum --check --strict
-
+        cache_source "${ffmpeg_url}" "${ffmpeg_sha}"
+        libxml_url="$(rpmspec --define "_topdir /work" -P /work/SPECS/monitorize.spec | awk '\''$1 == "Source3:" { print $2; exit }'\'')"
+        libxml_sha="$(awk '\''$1 == "%global" && $2 == "cuda_libxml2_sha256" { print $3; exit }'\'' /work/SPECS/monitorize.spec)"
+        cache_source "${libxml_url}" "${libxml_sha}"
 
         export HOME=/tmp/monitorize-rpmbuild-home
         mkdir -p "${HOME}"
@@ -138,21 +188,24 @@ podman run --rm \
         rpmlint /work/SRPMS/*.src.rpm /work/RPMS/x86_64/*.rpm
         cp /work/RPMS/x86_64/*.rpm /artifacts/x86_64/
         cp /work/SRPMS/*.src.rpm /artifacts/source/
-    ' 2>&1 | tee "${build_log}"
+    ' 2>&1 | tee -a "${build_log}"
 
 mapfile -t main_rpms < <(find "${artifact_stage}/x86_64" -maxdepth 1 -type f \
     -name "monitorize-${version}-*.x86_64.rpm" ! -name '*-debuginfo-*' ! -name '*-debugsource-*' | sort)
 (( ${#main_rpms[@]} == 1 )) || die "Expected exactly one primary Monitorize RPM, found ${#main_rpms[@]}."
 main_rpm="${main_rpms[0]}"
 
+if [[ "${rebuild}" == false ]]; then
 echo "Smoke-testing $(basename "${main_rpm}") in a fresh openSUSE Tumbleweed container…"
 podman run --rm \
     --arch amd64 \
     --security-opt label=disable \
     --volume "${main_rpm}:/tmp/monitorize.rpm:ro" \
+    --volume "${OUTPUT_ROOT}/cache/zypp-packages:/var/cache/zypp/packages" \
     "${IMAGE}" \
     bash -euxo pipefail -c '
         zypper --non-interactive --gpg-auto-import-keys refresh
+        zypper --non-interactive modifyrepo --keep-packages --all
         zypper --non-interactive install --allow-unsigned-rpm --no-recommends /tmp/monitorize.rpm desktop-file-utils
         test ! -e /root/.config/monitorize
         rpm -V monitorize
@@ -205,6 +258,7 @@ PYTHON
         test ! -e /usr/share/monitorize
         test ! -e /usr/share/applications/monitorize.desktop
     '
+fi
 
 mkdir -p "${OUTPUT_ROOT}/x86_64" "${OUTPUT_ROOT}/source"
 cp "${artifact_stage}/x86_64/"*.rpm "${OUTPUT_ROOT}/x86_64/"

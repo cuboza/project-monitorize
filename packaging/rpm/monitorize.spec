@@ -118,12 +118,20 @@ sed -i 's/find_package(Boost CONFIG ${BOOST_VERSION} EXACT /find_package(Boost C
 
 cuda_archive=${MONITORIZE_CUDA_ARCHIVE:-%{_builddir}/cuda_%{cuda_version}_%{cuda_build}_linux.run}
 mkdir -p "$(dirname "$cuda_archive")"
-aria2c --continue=true --max-connection-per-server=8 --split=8 --min-split-size=1M \
-    --file-allocation=none --max-tries=3 --retry-wait=5 \
-    --summary-interval=30 --console-log-level=warn \
-    --dir="$(dirname "$cuda_archive")" --out="$(basename "$cuda_archive")" \
-    https://developer.download.nvidia.com/compute/cuda/%{cuda_version}/local_installers/cuda_%{cuda_version}_%{cuda_build}_linux.run
-echo '%{cuda_sha256}  '"$cuda_archive" | sha256sum --check --strict
+if echo '%{cuda_sha256}  '"$cuda_archive" | sha256sum --check --strict --status; then
+    echo "Using cached CUDA installer: $cuda_archive"
+else
+    if [ "${MONITORIZE_OFFLINE:-0}" = 1 ]; then
+        echo "Missing cached CUDA installer: $cuda_archive. Run a normal build first." >&2
+        exit 1
+    fi
+    aria2c --continue=true --max-connection-per-server=8 --split=8 --min-split-size=1M \
+        --file-allocation=none --max-tries=3 --retry-wait=5 \
+        --summary-interval=30 --console-log-level=warn \
+        --dir="$(dirname "$cuda_archive")" --out="$(basename "$cuda_archive")" \
+        https://developer.download.nvidia.com/compute/cuda/%{cuda_version}/local_installers/cuda_%{cuda_version}_%{cuda_build}_linux.run
+    echo '%{cuda_sha256}  '"$cuda_archive" | sha256sum --check --strict
+fi
 bash "$cuda_archive" --silent --toolkit --toolkitpath=%{_builddir}/cuda \
     --no-drm --no-man-page --no-opengl-libs --override
 patch -p2 --directory=%{_builddir}/cuda \
@@ -286,6 +294,7 @@ PYTHON
 %changelog
 * Tue Sep 29 2026 Monitorize contributors <noreply@example.com> - 0.33-1
 - Set current Monitorize package version to 0.33.
+- Support offline local rebuilds from a prepared dependency image and cached sources.
 
 * Mon Sep 21 2026 Monitorize contributors <noreply@example.com> - 0.39-1
 - Release Monitorize 0.39 with compositor-native and VKMS virtual displays.
