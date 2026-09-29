@@ -6,7 +6,7 @@
 %global sunshine_ffmpeg_sha256 2c27d4694b4ed0e734f497d4bd62f1b3662cbbc4ded2a69f2dc4b703441eebb3
 
 Name:           monitorize
-Version:        0.39
+Version:        0.33
 Release:        1%{?dist}
 Summary:        Sunshine-backed virtual displays for Moonlight clients
 
@@ -284,6 +284,9 @@ PYTHON
 
 
 %changelog
+* Tue Sep 29 2026 Monitorize contributors <noreply@example.com> - 0.33-1
+- Set current Monitorize package version to 0.33.
+
 * Mon Sep 21 2026 Monitorize contributors <noreply@example.com> - 0.39-1
 - Release Monitorize 0.39 with compositor-native and VKMS virtual displays.
 

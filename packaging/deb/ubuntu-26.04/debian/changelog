@@ -1,3 +1,9 @@
+monitorize (0.33) resolute; urgency=medium
+
+  * Set current Monitorize package version to 0.33.
+
+ -- Monitorize contributors <noreply@example.com>  Tue, 29 Sep 2026 17:26:19 +0530
+
 monitorize (0.39) resolute; urgency=medium
 
   * Release Monitorize 0.39 with compositor-native and VKMS virtual displays.

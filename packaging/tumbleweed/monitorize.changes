@@ -1,4 +1,9 @@
 -------------------------------------------------------------------
+Tue Sep 29 2026 Monitorize contributors <noreply@example.com>
+
+- Set current Monitorize package version to 0.33.
+
+-------------------------------------------------------------------
 Mon Aug 24 2026 Monitorize contributors <noreply@example.com>
 
 - Add the openSUSE Tumbleweed package with the bundled Monitorize Sunshine fork.
