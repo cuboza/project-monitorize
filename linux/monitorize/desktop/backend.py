@@ -196,7 +196,7 @@ class MonitorizeBackend(QObject):
 
     @pyqtProperty(bool, notify=sessionChanged)
     def sessionRunning(self):
-        return self.session.running
+        return self.streaming.streaming and self.streaming.primary_ready
 
     @pyqtProperty(str, notify=sessionChanged)
     def sessionMode(self):

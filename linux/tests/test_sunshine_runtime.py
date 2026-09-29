@@ -8,6 +8,33 @@ from monitorize.platform import sunshine_service as service
 
 
 class SunshineRuntimeTest(unittest.TestCase):
+    def test_capture_failure_survives_successful_encoder_probe(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+                service, "get_sunshine_config_dir", return_value=tmp), patch.object(
+                service, "get_sunshine_process", return_value=process):
+            log = Path(tmp) / "sunshine.log"
+            prefix = "Info: Sunshine version: test\n"
+            error = "Info: [pipewire] PipeWire stream error 'no target node available'\n"
+            ready = "Info: Found H.264 encoder: libx264 [software]\nInfo: Configuration UI available at [https://localhost:47990]\n"
+            log.write_text(prefix + error)
+            self.assertEqual(service.get_sunshine_startup_status(), ("pending", ""))
+            log.write_text(prefix + error + ready + "Error: Failed to create client: Daemon not running\n")
+            self.assertEqual(service.get_sunshine_startup_status()[0], "failed")
+            self.assertFalse(service.check_sunshine_health()[0])
+            self.assertIn("no target node", service.check_sunshine_health()[2])
+            log.write_text(prefix + error + "Info: [pipewire] PipeWire stream state: paused -> streaming\n" + ready)
+            self.assertEqual(service.get_sunshine_startup_status(), ("ready", ""))
+            service._SUNSHINE_PREVIOUS_LOG_HEADERS[1] = prefix.strip()
+            self.assertEqual(service.get_sunshine_startup_status(), ("pending", ""))
+            service._SUNSHINE_PREVIOUS_LOG_HEADERS.clear()
+            self.assertTrue(service.check_sunshine_health()[0])
+            log.write_text(prefix + error + ready + prefix)
+            self.assertEqual(service.get_sunshine_startup_status(), ("pending", ""))
+            log.write_text(prefix + ready + "Error: Failed to create client: Daemon not running\n")
+            self.assertEqual(service.get_sunshine_startup_status(), ("ready", ""))
+
     def test_kms_preflight_requires_capability_on_bundled_binary(self):
         with (
             patch.object(service, "find_sunshine_command", return_value=["/tmp/monitorize-sunshine"]),
@@ -55,6 +82,7 @@ class SunshineRuntimeTest(unittest.TestCase):
             self.assertEqual(service.check_sunshine_health(1), (True, None, ""))
 
     def tearDown(self):
+        service._SUNSHINE_PREVIOUS_LOG_HEADERS.clear()
         service._SUNSHINE_PROCESS = None
         service._SUNSHINE_PROCESSES.clear()
         service._SUNSHINE_SETTINGS_INSTANCES.clear()

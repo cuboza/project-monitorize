@@ -33,6 +33,7 @@ from monitorize.platform.gpu_discovery import normalize_pci_id, resolve_encoding
 from monitorize.platform.process_utils import stop_processes
 from monitorize.platform.sunshine_service import (
     check_sunshine_health,
+    get_sunshine_startup_status,
     is_sunshine_settings_instance,
     get_sunshine_log_size,
     get_sunshine_kms_setup_error,
@@ -165,6 +166,7 @@ class StreamingController(QObject):
         self.streaming = False
         self.status = ""
         self.primary_ready = False
+        self.vkms_connector = ""
         self.streamer = None
         self.third_streamer = None
         self.third_streaming = False
@@ -198,6 +200,7 @@ class StreamingController(QObject):
         self.streaming_backend = "sunshine"
         self._sunshine_log_offsets = {1: 0, 2: 0}
         self._x11_capture_targets = {}
+        self._pending_sunshine_ready = {}
         self.prepare_only = False
         self.display_events = {}
 
@@ -333,9 +336,11 @@ class StreamingController(QObject):
                 self._set_streaming(False)
                 self.startFailed.emit()
                 return
-            self._set_primary_ready(True)
-            self._set_status(f"Mirroring {self.mirror_output} — ready for Moonlight")
-            self._start_pending_second(options)
+            def ready():
+                self._set_primary_ready(True)
+                self._set_status(f"Mirroring {self.mirror_output} — ready for Moonlight")
+                self._start_pending_second(options)
+            self._await_sunshine_ready(1, ready)
             return
 
         self._set_status(
@@ -504,20 +509,32 @@ class StreamingController(QObject):
                 self.startFailed.emit()
             return
 
-        if instance == 1:
-            self._set_primary_ready(True)
-            self._set_status(
-                f"Virtual display {output_name} ({width}x{height}) is ready for Moonlight"
-                if event.get("portal") else
-                f"Virtual display {output_name} ({width}x{height}@{fps:g}Hz) is ready for Moonlight"
-            )
-            self._start_pending_second(self.pending_options)
+        def ready():
+            if instance == 1:
+                self._set_primary_ready(True)
+                self._set_status(
+                    f"Virtual display {output_name} ({width}x{height}) is ready for Moonlight"
+                    if event.get("portal") else
+                    f"Virtual display {output_name} ({width}x{height}@{fps:g}Hz) is ready for Moonlight"
+                )
+                self._start_pending_second(self.pending_options)
+            else:
+                self.third_ready = True
+                self._set_status(
+                    f"Second display {output_name} ({width}x{height}@{fps:g}Hz) is ready on Sunshine port 49089"
+                )
+                self.secondStreamChanged.emit(True)
+        self._await_sunshine_ready(instance, ready)
+
+    def _await_sunshine_ready(self, instance, callback):
+        """Keep the session starting until Sunshine finishes initialization."""
+        state, _ = get_sunshine_startup_status(instance)
+        if state == "ready":
+            callback()
         else:
-            self.third_ready = True
-            self._set_status(
-                f"Second display {output_name} ({width}x{height}@{fps:g}Hz) is ready on Sunshine port 49089"
-            )
-            self.secondStreamChanged.emit(True)
+            self._pending_sunshine_ready[instance] = (time.monotonic(), callback)
+            self._set_status(f"Starting Sunshine instance {instance}…")
+            self.sunshine_watchdog_timer.start()
 
     def _start_instance(
         self,
@@ -589,8 +606,9 @@ class StreamingController(QObject):
             and os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
             and capture == "portal"
         )
-        if (load_general_settings().get("sunshine_web_settings_enabled")
-                and not portal_source_type and not pipewire_node):
+        # Capture choices saved in Sunshine remain authoritative even when
+        # Monitorize's embedded settings UI is disabled.
+        if not portal_source_type:
             requested = get_saved_sunshine_config(instance).get("capture", "").lower()
             if cosmic_portal:
                 compatible = requested == "portal"
@@ -773,6 +791,7 @@ class StreamingController(QObject):
         )
 
     def stop_third(self):
+        self._pending_sunshine_ready.pop(2, None)
         if not self.third_streaming and self.third_streamer is None:
             return
         self._save_gnome_virtual_layout()
@@ -857,7 +876,8 @@ class StreamingController(QObject):
             alive, exit_code, error = check_sunshine_health(1)
             if not alive:
                 self.sunshine_watchdog_timer.stop()
-                message = "Sunshine instance 1 stopped unexpectedly"
+                message = ("Sunshine instance 1 failed" if exit_code is None
+                           else "Sunshine instance 1 stopped unexpectedly")
                 if exit_code is not None:
                     message += f" (exit code {exit_code})"
                 if error:
@@ -867,6 +887,18 @@ class StreamingController(QObject):
                 self._set_status(message)
                 QTimer.singleShot(0, self.stop)
                 return
+            pending = self._pending_sunshine_ready.get(1)
+            if pending:
+                state, detail = get_sunshine_startup_status(1)
+                if state == "ready":
+                    self._pending_sunshine_ready.pop(1, None)
+                    pending[1]()
+                elif state == "failed" or time.monotonic() - pending[0] > 120:
+                    self._pending_sunshine_ready.pop(1, None)
+                    self._set_status(detail or "Sunshine startup timed out")
+                    self.startFailed.emit()
+                    QTimer.singleShot(0, self.stop)
+                    return
             target = self._x11_capture_targets.get(1)
             if target and get_sunshine_x11_capture_status(
                 1, target, self._sunshine_log_offsets[1]
@@ -905,7 +937,8 @@ class StreamingController(QObject):
             if self.third_streaming:
                 alive, exit_code, error = check_sunshine_health(2)
                 if not alive:
-                    message = "Sunshine instance 2 stopped unexpectedly"
+                    message = ("Sunshine instance 2 failed" if exit_code is None
+                               else "Sunshine instance 2 stopped unexpectedly")
                     if exit_code is not None:
                         message += f" (exit code {exit_code})"
                     if error:
@@ -915,6 +948,18 @@ class StreamingController(QObject):
                     self._set_status(message)
                     QTimer.singleShot(0, self.stop_third)
                     return
+                pending = self._pending_sunshine_ready.get(2)
+                if pending:
+                    state, detail = get_sunshine_startup_status(2)
+                    if state == "ready":
+                        self._pending_sunshine_ready.pop(2, None)
+                        pending[1]()
+                    elif state == "failed" or time.monotonic() - pending[0] > 120:
+                        self._pending_sunshine_ready.pop(2, None)
+                        self._set_status(detail or "Sunshine startup timed out")
+                        self.startFailed.emit()
+                        QTimer.singleShot(0, self.stop_third)
+                        return
                 target = self._x11_capture_targets.get(2)
                 if target and get_sunshine_x11_capture_status(
                     2, target, self._sunshine_log_offsets[2]
@@ -1007,6 +1052,7 @@ class StreamingController(QObject):
             self.gnome_layout_change_timer.start()
 
     def stop(self):
+        self._pending_sunshine_ready.clear()
         if self._is_stopping:
             return
         self._is_stopping = True

@@ -70,7 +70,7 @@ Item {
                 spacing: 12
                 Rectangle {
                     width: 12; height: 12; radius: 6
-                    color: backend.sessionRunning ? "#34d681" : (backend.sessionBusy ? "#efbd5a" : theme.textMuted)
+                    color: backend.sessionBusy ? "#efbd5a" : (backend.sessionRunning ? "#34d681" : theme.textMuted)
                 }
                 Text {
                     text: backend.sessionBusy ? "Preparing session" : (backend.sessionRunning ? "Session active" : "Session")
@@ -155,7 +155,7 @@ Item {
                     onClicked: { presetName.text = ""; presetMessage.text = ""; presetPopup.open() }
                 }
                 CustomButton {
-                    text: backend.sessionRunning || backend.sessionBusy || (backend.streamingBackend === "none" && backend.isStreaming) ? "Stop" : "Start"
+                    text: backend.isStreaming || backend.sessionBusy ? "Stop" : "Start"
                     danger: text === "Stop"
                     enabled: text === "Stop" || (!backend.vkmsModuleLoading
                         && (backend.sessionMode === "Mirror" || backend.sessionHasDisplays))

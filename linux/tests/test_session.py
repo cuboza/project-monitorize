@@ -12,6 +12,10 @@ class SessionTest(unittest.TestCase):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
 
     def setUp(self):
+        readiness = patch("monitorize.desktop.streaming_controller.get_sunshine_startup_status",
+                          return_value=("ready", ""))
+        readiness.start()
+        self.addCleanup(readiness.stop)
         p = patch(
             "monitorize.platform.mirror_outputs.active_outputs",
             return_value=[
