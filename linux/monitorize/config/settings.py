@@ -297,6 +297,9 @@ def _normalize_preset(raw: dict) -> dict | None:
     else:
         return None
 
+    if not isinstance(second_raw, dict):
+        return None
+
     primary = _normalize_session(primary_raw)
     if primary is None:
         return None

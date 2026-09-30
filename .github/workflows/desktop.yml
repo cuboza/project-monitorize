@@ -41,6 +41,11 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git -C external/sunshine config --global --add safe.directory "$GITHUB_WORKSPACE/external/sunshine"
           bash -n packaging/rpm/build.sh packaging/tumbleweed/build.sh
+          bash -n packaging/arch/build.sh packaging/arch/container-prepare.sh \
+            packaging/arch/container-build.sh \
+            packaging/arch/smoke-test.sh packaging/arch/PKGBUILD \
+            packaging/arch/dependencies.sh packaging/arch/monitorize.install \
+            packaging/arch/monitorize-wrapper
           python3 - <<'PYTHON'
           from pathlib import Path
           import re
@@ -57,9 +62,16 @@ jobs:
               assert re.search(rf"(?m)^%global sunshine_commit {sunshine}$", spec)
               assert "-DCUDA_FAIL_ON_MISSING=ON" in spec
               assert "-DSUNSHINE_ENABLE_CUDA=ON" in spec
+          arch_pkg = Path("packaging/arch/PKGBUILD").read_text()
+          arch_sources = Path("packaging/arch/sources.conf").read_text()
+          assert re.search(rf"(?m)^pkgver={re.escape(version)}$", arch_pkg)
+          assert re.search(rf"(?m)^SUNSHINE_COMMIT={sunshine}$", arch_sources)
+          assert "-DCUDA_FAIL_ON_MISSING=ON" in arch_pkg
+          assert "-DSUNSHINE_ENABLE_CUDA=ON" in arch_pkg
           PYTHON
           git -C external/sunshine apply --check ../../packaging/sunshine-strict-selection.patch
           rpmspec -P packaging/rpm/monitorize.spec >/dev/null
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=linux python3 -m unittest \
+            linux.tests.test_arch_builder \
             linux.tests.test_tumbleweed_rpm \
             linux.tests.test_installer.SunshineOnlyPackagingTest.test_forced_codec_participates_in_moonlight_negotiation -q

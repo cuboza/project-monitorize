@@ -5,11 +5,18 @@ import QtQuick.Layouts
 Item {
     id: page
     property int renameIndex: -1
+    property bool launchAttempted: false
     ScrollView {
         anchors.fill: parent; clip: true; contentWidth: availableWidth
         ColumnLayout {
             width: parent.width; spacing: 18
             Text { text: "Presets"; color: theme.textPrimary; font.pixelSize: 28; font.weight: Font.Bold }
+            Text {
+                text: backend.presetLaunchStatus || backend.streamingStatus
+                visible: page.launchAttempted && text.length > 0
+                color: backend.presetLaunchStatus ? "#fca5a5" : theme.textSecondary
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+            }
             Text {
                 visible: backend.presets.length === 0
                 text: "No saved presets yet. Save a preset from your session."
@@ -27,7 +34,14 @@ Item {
                         required property int index
                         Layout.fillWidth: true
                         Text { text: modelData.name; color: theme.textPrimary; Layout.fillWidth: true }
-                        CustomButton { text: "Start"; enabled: !backend.isStreaming && !backend.sessionBusy && !backend.vkmsModuleLoading; onClicked: backend.launchPreset(index) }
+                        CustomButton {
+                            text: "Start"
+                            enabled: !backend.isStreaming && !backend.sessionBusy && !backend.vkmsModuleLoading
+                            onClicked: {
+                                page.launchAttempted = true
+                                backend.launchPreset(index)
+                            }
+                        }
                         CustomButton {
                             text: "⋮"; primary: false; implicitWidth: 38
                             onClicked: presetMenu.open()

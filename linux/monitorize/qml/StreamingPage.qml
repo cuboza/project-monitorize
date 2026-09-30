@@ -151,8 +151,13 @@ Item {
                 spacing: 10
                 CustomButton { text: "Pair Moonlight PIN"; visible: backend.streamingBackend !== "none"; enabled: backend.sessionRunning && !backend.sessionBusy; onClicked: page.openPair(1) }
                 CustomButton {
-                    text: "Save Preset"; primary: false; enabled: backend.isStreaming
-                    onClicked: { presetName.text = ""; presetMessage.text = ""; presetPopup.open() }
+                    text: "Save Preset"; primary: false; enabled: backend.canSavePreset
+                    onClicked: {
+                        presetTarget.currentIndex = 0
+                        presetName.text = ""
+                        presetMessage.text = ""
+                        presetPopup.open()
+                    }
                 }
                 CustomButton {
                     text: backend.isStreaming || backend.sessionBusy ? "Stop" : "Start"
@@ -285,6 +290,17 @@ Item {
             width: parent.width
             spacing: 12
             Text { text: "Save Session Preset"; color: theme.textPrimary; font.pixelSize: 18; font.weight: Font.Bold }
+            CustomComboBox {
+                id: presetTarget
+                Layout.fillWidth: true
+                model: ["New preset"].concat(backend.presets.map(function(preset) {
+                    return "Replace " + preset.name
+                }))
+                onActivated: function(index) {
+                    presetName.text = index > 0 ? backend.presets[index - 1].name : ""
+                    presetMessage.text = ""
+                }
+            }
             CustomTextField { id: presetName; Layout.fillWidth: true; placeholderText: "Preset name"; maximumLength: 32 }
             Text { id: presetMessage; color: "#fca5a5"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             RowLayout {
@@ -294,9 +310,9 @@ Item {
                     text: "Save"
                     primary: true
                     onClicked: {
-                        let result = backend.saveCurrentPreset(presetName.text, -1)
+                        let result = backend.saveCurrentPreset(presetName.text, presetTarget.currentIndex - 1)
                         if (result === "") presetPopup.close()
-                        else presetMessage.text = result === "full" ? "Delete or replace an existing preset first." : result
+                        else presetMessage.text = result === "full" ? "Choose a preset to replace or delete one first." : result
                     }
                 }
             }

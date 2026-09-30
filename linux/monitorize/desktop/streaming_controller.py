@@ -854,9 +854,12 @@ class StreamingController(QObject):
         second = (options or {}).get("second")
         if not second or not second.get("enabled"):
             return
-        QTimer.singleShot(
-            0,
-            lambda: self.start_third(
+        generation = self.generation
+
+        def start_second():
+            if generation != self.generation or not self.streaming:
+                return
+            self.start_third(
                 second["resolution"],
                 second["fps"],
                 second.get("sunshine_encoder", "Auto"),
@@ -865,8 +868,11 @@ class StreamingController(QObject):
                 second.get("enable_audio", False),
                 gpu_id=second.get("sunshine_gpu", ""),
                 vkms_custom_mode=second.get("vkms_custom_mode", False),
-            ),
-        )
+            )
+            if self.pending_options is options:
+                self.pending_options = None
+
+        QTimer.singleShot(0, start_second)
 
     def _check_sunshine_health(self):
         if not self.streaming:

@@ -125,6 +125,15 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertEqual(settings.load_display_settings()["sunshine_gpu"], "")
 
+    def test_malformed_second_display_does_not_crash_preset_loading(self):
+        store = QSettings(self.config_file, QSettings.Format.IniFormat)
+        store.setValue("presets/items", json.dumps([
+            {"version": 2, "name": "Broken", "primary": {}, "second": "invalid"},
+            {"version": 2, "name": "Valid", "primary": {}, "second": {"enabled": False}},
+        ]))
+        store.sync()
+        self.assertEqual([preset["name"] for preset in settings.load_presets()], ["Valid"])
+
     def test_custom_resolution_round_trip(self):
         settings.save_display_settings(
             resolution="Custom...",

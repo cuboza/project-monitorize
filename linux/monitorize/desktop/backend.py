@@ -128,6 +128,7 @@ class MonitorizeBackend(QObject):
         )
         self.streaming.streamingChanged.connect(self.isStreamingChanged)
         self.streaming.startFailed.connect(self.streamingStartFailed)
+        self.vkmsStartFailed.connect(self._set_preset_launch_status)
         self.streaming.codecMismatch.connect(self.streamingCodecMismatch)
         self.streaming.statusChanged.connect(self.streamingStatusChanged)
         self.streaming.vkmsCustomEdidUnsupported.connect(
@@ -254,6 +255,13 @@ class MonitorizeBackend(QObject):
     @pyqtProperty(bool, notify=isStreamingChanged)
     def isStreaming(self):
         return self.streaming.streaming
+
+    @pyqtProperty(bool, notify=sessionChanged)
+    def canSavePreset(self):
+        if not self.streaming.streaming or not self.streaming.primary_ready or self.session.busy:
+            return False
+        second = (self.streaming.pending_options or {}).get("second") or {}
+        return not second.get("enabled") or self.streaming.third_ready
 
     @pyqtProperty(str, notify=streamingStatusChanged)
     def streamingStatus(self):
@@ -1133,8 +1141,8 @@ class MonitorizeBackend(QObject):
     @pyqtSlot(str, int, result=str)
     def saveCurrentPreset(self, name, replace_index=-1):
         name = name.strip()
-        if not self.streaming.streaming:
-            return "No active display to save."
+        if not self.canSavePreset:
+            return "Wait until the session is ready before saving a preset."
         if not name:
             return "Enter a preset name."
         if len(name) > 32:
@@ -1149,7 +1157,7 @@ class MonitorizeBackend(QObject):
             -1,
         )
         if duplicate >= 0:
-            return f"duplicate:{duplicate}"
+            return "A preset with this name already exists. Choose it under Replace preset."
         if replace_index < -1 or replace_index >= len(self._presets):
             return "Invalid preset selection."
         if replace_index == -1 and len(self._presets) >= MAX_PRESETS:
@@ -1168,10 +1176,12 @@ class MonitorizeBackend(QObject):
     @pyqtSlot(int)
     def launchPreset(self, index):
         if self.virtualDisplayCleanupRunning or self.vkmsModuleLoading:
+            self._set_preset_launch_status("Wait for virtual display setup to finish.")
             return
         if index < 0 or index >= len(self._presets):
             self._set_preset_launch_status("Preset no longer exists.")
             return
+        self._set_preset_launch_status("")
         preset = self._presets[index]
         import copy
         primary = preset["primary"]
@@ -1190,10 +1200,10 @@ class MonitorizeBackend(QObject):
                 and (primary.get("virtual_display_creator", "native") != "vkms"
                      or not self.vkmsCreatorAvailable)
                 and not self.ensureNativeCompositor()):
+            self._set_preset_launch_status("Select a supported desktop before starting this preset.")
             return
         self._cancel_settings_open()
         self.session.preset_configuration = copy.deepcopy(preset)
-        self._set_preset_launch_status("")
         self.streaming.start(
             primary["resolution"],
             primary["fps"],

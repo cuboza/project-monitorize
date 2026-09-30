@@ -320,6 +320,29 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.c.codec, "AV1")
         self.assertEqual(self.c.third_codec, "HEVC")
 
+    def test_queued_preset_second_display_is_cancelled_after_stop(self):
+        self.c.start(
+            "1920x1080", "60", options={"second": {
+                "enabled": True, "resolution": "1280x800", "fps": "60",
+            }},
+        )
+        self.c._display_ready("primary", {"name": "Monitorize-1", "width": 1920,
+                                           "height": 1080, "fps": 60})
+        self.c.stop()
+        QCoreApplication.processEvents()
+        self.assertFalse(self.c.third_streaming)
+        self.assertEqual(self.c._start_display_process.call_count, 1)
+
+    def test_queued_preset_second_display_clears_pending_options(self):
+        self.c.start(
+            "1920x1080", "60", options={"second": {
+                "enabled": True, "resolution": "1280x800", "fps": "60",
+            }},
+        )
+        self.ready()
+        self.assertTrue(self.c.third_streaming)
+        self.assertIsNone(self.c.pending_options)
+
     @patch("monitorize.desktop.session.app_log.write")
     def test_custom_vkms_resolution_configuration_and_logging(self, mock_log_write):
         self.config.update(
