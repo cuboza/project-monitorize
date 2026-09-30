@@ -1,3 +1,3 @@
 #!/usr/bin/make -f
-MONITORIZE_DEB_TARGET := ubuntu-26.04
+MONITORIZE_DEB_TARGET := debian-trixie
 include packaging/deb/common/rules.mk

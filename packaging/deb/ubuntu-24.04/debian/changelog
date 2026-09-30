@@ -1,0 +1,5 @@
+monitorize (0.33) noble; urgency=medium
+
+  * Build Monitorize with the bundled Sunshine fork for ubuntu-24.04.
+
+ -- Monitorize contributors <noreply@example.com>  Tue, 29 Sep 2026 17:26:19 +0530

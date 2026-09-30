@@ -154,6 +154,8 @@ modules:
       - type: git
         url: https://github.com/vinnavannewton/monitorize-sunshine.git
         commit: e3ce79f3b966df388e905a3c6b3784832a328e34
+      # This pinned revision predates the shared native PipeWire targeting fix.
+      # Keep the portal patch targeting hunks until the source pin is updated.
       - type: patch
         path: sunshine-flatpak-portal.patch
       # Portal DMA-BUFs are not reliably importable by a different Intel/AMD
@@ -167,8 +169,9 @@ modules:
         path: sunshine-flatpak-ffmpeg9-nvenc-preset.patch
       - type: patch
         path: sunshine-flatpak-session-reuse.patch
+      # The pinned source lacks the native RTSP codec-rejection block.
       - type: patch
-        path: ../sunshine-strict-selection.patch
+        path: sunshine-flatpak-strict-selection.patch
       - type: patch
         path: sunshine-mirror-selection.patch
 
