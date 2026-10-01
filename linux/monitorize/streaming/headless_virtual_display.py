@@ -35,6 +35,10 @@ def _set_pdeathsig() -> None:
             libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
         except Exception:
             pass
+    try:
+        os.nice(-10)
+    except (OSError, PermissionError):
+        pass
 
 
 def _emit_event(event: dict):
@@ -474,6 +478,11 @@ def run_gnome_headless(slot, width, height, fps, display_type="Extend"):
 
 
 def main():
+    try:
+        os.nice(-10)
+    except (OSError, PermissionError):
+        pass
+
     width = int(sys.argv[1]) if len(sys.argv) > 1 else 1920
     height = int(sys.argv[2]) if len(sys.argv) > 2 else 1080
     slot = sys.argv[4] if len(sys.argv) > 4 else "primary"

@@ -33,6 +33,10 @@ def _set_pdeathsig() -> None:
             libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
         except Exception:
             pass
+    try:
+        os.nice(-10)
+    except (OSError, PermissionError):
+        pass
 
 
 SUNSHINE_BASE_PORT = 47989
