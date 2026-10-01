@@ -6,6 +6,9 @@ source /packaging/dependencies.sh
 # One full upgrade keeps the fresh Arch image and repository state in sync.
 pacman -Syu --noconfirm --needed desktop-file-utils libcap \
     "${monitorize_runtime_deps[@]}"
+# The official Arch container excludes usr/share/doc/* via NoExtract. Remove
+# that exclusion in this disposable test so pacman -Qkk can verify the package.
+sed -i '/^[[:space:]]*NoExtract[[:space:]]*=.*usr\/share\/doc\/\*/d' /etc/pacman.conf
 mkdir -p /root/.config/monitorize
 printf 'preserve me\n' > /root/.config/monitorize/packaging-check
 
@@ -13,6 +16,7 @@ pacman -U --noconfirm /tmp/monitorize.pkg.tar.zst
 pacman -Qi monitorize
 pacman -Ql monitorize > /tmp/monitorize-file-list
 pacman -Qkk monitorize
+test -f /usr/share/doc/monitorize/README.md
 getent group monitorize-input
 getcap /usr/libexec/monitorize/sunshine | grep -q 'cap_sys_admin'
 test -x /usr/bin/monitorize
