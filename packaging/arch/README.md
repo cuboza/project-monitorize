@@ -20,6 +20,9 @@ the Python wheel, KDE helper, and bundled Sunshine with required CUDA support,
 then installs and removes the package in a fresh Arch container. Compilation
 uses at most two jobs by default; set `MONITORIZE_BUILD_JOBS` to a positive
 integer to change that.
+The build uses the host UID/GID inside the container. If Arch already has an
+account at that UID, preparation reuses it and puts build-home files under
+`/work/home`.
 
 For later source changes, reuse the prepared image and caches without any
 container network access:

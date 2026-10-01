@@ -8,6 +8,8 @@ die() { echo "Error: $*" >&2; exit 1; }
 [[ "$(id -u)" != 0 ]] || die 'makepkg must run as the unprivileged build user.'
 [[ "$(id -u)" == "${MONITORIZE_BUILD_UID:?}" ]] || die 'Unexpected build UID.'
 [[ -x /opt/cuda/bin/nvcc ]] || die 'Missing cached CUDA toolkit; rerun the normal build.'
+[[ "${HOME:-}" == /work/home ]] || die 'Build home must be /work/home.'
+mkdir -p "${HOME}"
 
 cache_source() {
     local url="$1" sha="$2" name="$3" archive

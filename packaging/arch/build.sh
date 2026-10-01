@@ -170,6 +170,7 @@ fi
 podman run "${run_options[@]}" \
     --env "MONITORIZE_BUILD_UID=${build_uid}" \
     --env "MONITORIZE_BUILD_JOBS=${build_jobs}" \
+    --env HOME=/work/home \
     --env "MONITORIZE_SOURCE_COMMIT=${source_commit}" \
     --env "MONITORIZE_SOURCE_SHA256=${source_sha}" \
     --env "MONITORIZE_SUNSHINE_COMMIT=${SUNSHINE_COMMIT}" \
