@@ -18,7 +18,7 @@ cache_source() {
         [[ "${MONITORIZE_OFFLINE:-0}" != 1 ]] \
             || die "Missing or invalid cached ${name}; run ./packaging/arch/build.sh first."
         curl --fail --location --retry 3 --output "${archive}.part" "${url}"
-        printf '%s  %s\n' "${sha}" "${archive}.part" | sha256sum --check --strict
+        printf '%s  %s\n' "${sha}" "${archive}.part" | sha256sum --check --strict --status
         mv "${archive}.part" "${archive}"
     fi
     printf '%s\n' "${archive}"
